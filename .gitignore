@@ -1,0 +1,37 @@
+# ===== Build outputs =====
+build/
+mx.scratch
+CMakeUserPresets.json
+*.o
+*.obj
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.out
+*.su
+
+# ===== IDE / Editor =====
+.vscode/
+.idea/
+.settings/
+.mxproject
+.clangd
+.cache/
+compile_commands.json
+*.swp
+*.swo
+*~
+
+# ===== OS generated =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== Personal AI/Dev tools =====
+.spec-workflow/
+
+# ===== Misc =====
+*.bak
+*.tmp
