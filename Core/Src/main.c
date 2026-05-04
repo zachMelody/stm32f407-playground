@@ -20,6 +20,7 @@
 #include "main.h"
 #include "adc.h"
 #include "dma.h"
+#include "spi.h"
 #include "tim.h"
 #include "usart.h"
 #include "usb_device.h"
@@ -27,9 +28,14 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdio.h>
-#include <math.h>
+#include "BMP.h"
+#include "effects.h"
+#include "lcd.h"
+#include "lcd_init.h"
+#include "pic.h"
 #include "usbd_cdc_if.h"
+#include <math.h>
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -269,6 +275,7 @@ int main(void)
   MX_TIM6_Init();
   MX_ADC1_Init();
   MX_USB_DEVICE_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   ADC1->CR2 |= ADC_CR2_DDS; /* 每次转换都触发 DMA（CubeMX 没开） */
 
@@ -277,6 +284,21 @@ int main(void)
   printf("  Baud: 115200  8N1\r\n");
   printf("  Echo mode: type anything\r\n");
   printf("========================================\r\n\r\n");
+
+  /* 初始化 TFT 显示屏 */
+  LCD_Init();
+  LCD_Fill(0, 0, 240, 240, WHITE);
+  LCD_ShowChinese(0, 0, "你好", BLUE, WHITE, 32, 0);
+  LCD_ShowString(0, 40, "LCD_W:", RED, WHITE, 16, 0);
+  LCD_ShowIntNum(48, 40, LCD_W, 3, RED, WHITE, 16);
+  LCD_ShowString(80, 40, "LCD_H:", RED, WHITE, 16, 0);
+  LCD_ShowIntNum(128, 40, LCD_H, 3, RED, WHITE, 16);
+  LCD_ShowString(0, 70, "Increaseing Nun:", RED, WHITE, 16, 0);
+  for (int j = 0; j < 3; j++) {
+    for (int i = 0; i < 6; i++) {
+      LCD_ShowPicture(40 * i, 120 + j * 40, 40, 40, gImage_1);
+    }
+  }
 
   /* 启动 DMA 循环接收 + 定时器 + ADC */
   rx_last_ndtr = DMA_BUF_SIZE;
@@ -327,6 +349,7 @@ int main(void)
         ReadADC();
       }
     }
+
   }
   /* USER CODE END 3 */
 }
