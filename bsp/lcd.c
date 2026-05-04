@@ -14,18 +14,24 @@
 								color       Ҫ������ɫ
       ����ֵ��  ��
 ******************************************************************************/
-void LCD_Fill(u16 xsta,u16 ysta,u16 xend,u16 yend,u16 color)
-{          
-	u16 i,j; 
-	LCD_Address_Set(xsta,ysta,xend-1,yend-1);//������ʾ��Χ
-	for(i=ysta;i<yend;i++)
-	{													   	 	
-		for(j=xsta;j<xend;j++)
-		{
-			LCD_WR_DATA(color);
-		}
-	} 					  	    
+static u16 line_buf[240];
+
+void LCD_Fill(u16 xsta, u16 ysta, u16 xend, u16 yend, u16 color)
+{
+	u16 i, w = xend - xsta + 1, h = yend - ysta + 1;
+	if (w == 0 || h == 0) return;
+	LCD_Address_Set(xsta, ysta, xend, yend);
+
+	for (i = 0; i < w; i++) {
+		line_buf[i] = color;
+	}
+
+	for (i = 0; i < h; i++) {
+		LCD_WriteBytes((const u8 *)line_buf, w * 2);
+	}
 }
+
+
 
 /******************************************************************************
       ����˵������ָ��λ�û���
@@ -542,20 +548,10 @@ void LCD_ShowFloatNum1(u16 x,u16 y,float num,u8 len,u16 fc,u16 bc,u8 sizey)
                 pic[]  ͼƬ����    
       ����ֵ��  ��
 ******************************************************************************/
-void LCD_ShowPicture(u16 x,u16 y,u16 length,u16 width,const u8 pic[])
+void LCD_ShowPicture(u16 x, u16 y, u16 length, u16 width, const u8 pic[])
 {
-	u16 i,j;
-	u32 k=0;
-	LCD_Address_Set(x,y,x+length-1,y+width-1);
-	for(i=0;i<length;i++)
-	{
-		for(j=0;j<width;j++)
-		{
-			LCD_WR_DATA8(pic[k*2]);
-			LCD_WR_DATA8(pic[k*2+1]);
-			k++;
-		}
-	}			
+	LCD_Address_Set(x, y, x + length - 1, y + width - 1);
+	LCD_WriteBytes(pic, (u32)length * width * 2);
 }
 
 

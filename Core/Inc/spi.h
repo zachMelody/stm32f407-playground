@@ -36,6 +36,8 @@ extern SPI_HandleTypeDef hspi1;
 
 /* USER CODE BEGIN Private defines */
 
+extern volatile uint8_t spi1_dma_done;
+
 /* USER CODE END Private defines */
 
 void MX_SPI1_Init(void);

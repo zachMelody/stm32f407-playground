@@ -1,7 +1,8 @@
 #include "lcd_init.h"
-//#include "delay.h"
 
 #include "spi.h"
+
+extern volatile uint8_t spi1_dma_done;
 
 
 void LCD_GPIO_Init(void)
@@ -85,8 +86,30 @@ void LCD_WR_REG(u8 dat)
 void LCD_WriteBytes(const u8 *data, u32 len)
 {
 	if (data == NULL || len == 0) return;
+
+	/* 等待上一笔 DMA 传输完成 */
+	uint32_t to = 0xFFFFFF;
+	while (!spi1_dma_done && --to);
+	if (to == 0) {
+		HAL_SPI_DMAStop(&hspi1);
+		spi1_dma_done = 1;
+	}
+
+	spi1_dma_done = 0;
 	LCD_CS_Clr();
-	HAL_SPI_Transmit(&hspi1, (uint8_t*)data, len, 100000);
+	if (HAL_SPI_Transmit_DMA(&hspi1, (uint8_t*)data, len) != HAL_OK) {
+		spi1_dma_done = 1;
+		LCD_CS_Set();
+		return;
+	}
+
+	/* 等待 DMA 传输完成 + SPI 总线释放 */
+	to = 0xFFFFFF;
+	while (!spi1_dma_done && --to);
+	if (to == 0) {
+		HAL_SPI_DMAStop(&hspi1);
+		spi1_dma_done = 1;
+	}
 	LCD_CS_Set();
 }
 

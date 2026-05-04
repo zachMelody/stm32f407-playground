@@ -84,6 +84,157 @@ void MX_GPIO_Init(void) {
 
 ---
 
+## DMA Usage: SPI TX for Display Drivers
+
+> Scenario: TFT LCD 通过 SPI DMA 发送像素数据（主模式，仅发送）
+
+### 1. Scope / Trigger
+
+- Trigger: 使用 SPI 驱动 TFT 显示屏（ST7789 等），需要高吞吐量批量传输像素数据
+- Affected layers: HAL SPI driver → BSP LCD driver → CubeMX ISR wiring
+
+### 2. Signatures
+
+```c
+// spi.c — DMA 完成标志（跨文件可见）
+volatile uint8_t spi1_dma_done = 1;   // 1=空闲, 0=传输中
+
+// spi.c — HAL 弱函数覆盖
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
+  if (hspi->Instance == SPI1) spi1_dma_done = 1;
+}
+
+// lcd_init.c — 批量 DMA 发送（带超时保护）
+void LCD_WriteBytes(const u8 *data, u32 len);
+```
+
+### 3. Contracts
+
+**DMA 通道配置**（CubeMX 生成，不可手动修改）:
+| Field | Value |
+|-------|-------|
+| Stream | DMA2_Stream3 |
+| Channel | DMA_CHANNEL_3 |
+| Direction | MEMORY_TO_PERIPH |
+| PeriphInc | PINC_DISABLE |
+| MemInc | MINC_ENABLE |
+| PeriphDataAlign | BYTE |
+| MemDataAlign | BYTE |
+| Mode | NORMAL |
+| Priority | HIGH |
+| FIFOMode | DISABLE |
+
+**中断接线**（CubeMX 生成）:
+| IRQ | Handler | 作用 |
+|-----|---------|------|
+| SPI1_IRQn | `HAL_SPI_IRQHandler(&hspi1)` | DMA 启动时的 ERR 中断处理 |
+| DMA2_Stream3_IRQn | `HAL_DMA_IRQHandler(&hdma_spi1_tx)` | DMA 传输完成 → 回调链 |
+
+**CS 时序契约**:
+```
+LCD_CS_Clr() → HAL_SPI_Transmit_DMA() → 轮询 spi1_dma_done → LCD_CS_Set()
+```
+
+### 4. Validation & Error Matrix
+
+| Condition | Handling |
+|-----------|----------|
+| `data == NULL \|\| len == 0` | 直接返回 |
+| `HAL_SPI_Transmit_DMA` 返回非 OK | 置 spi1_dma_done=1, 释放 CS, return |
+| 轮询超时 (0xFFFFFF 次迭代) | `HAL_SPI_DMAStop`, 置 spi1_dma_done=1, 释放 CS |
+| 启动前 spi1_dma_done == 0（上次未完成） | 轮询等待 + 超时后 DMAStop 恢复 |
+
+### 5. Good/Base/Bad Cases
+
+**Good** — 批量数据走 DMA，寄存器命令走阻塞:
+```c
+// lcd_init.c — 寄存器写入保持阻塞（单字节）
+void LCD_Writ_Bus(u8 dat) {
+  LCD_CS_Clr();
+  HAL_SPI_Transmit(&hspi1, &dat, 1, 1000);  // 阻塞
+  LCD_CS_Set();
+}
+
+// lcd_init.c — 批量数据走 DMA
+void LCD_WriteBytes(const u8 *data, u32 len) {
+  while (!spi1_dma_done);     // 等待空闲
+  spi1_dma_done = 0;
+  LCD_CS_Clr();
+  HAL_SPI_Transmit_DMA(&hspi1, (uint8_t*)data, len);
+  while (!spi1_dma_done);     // 等待完成
+  LCD_CS_Set();
+}
+```
+
+**Base** — 行缓冲方式填充（balance of memory vs speed）:
+```c
+// lcd.c — 480 字节行缓冲, 逐行 DMA
+static u16 line_buf[240];
+void LCD_Fill(u16 xsta, u16 ysta, u16 xend, u16 yend, u16 color) {
+  for (i = 0; i < w; i++) line_buf[i] = color;   // 填一行
+  for (i = 0; i < h; i++) LCD_WriteBytes((const u8*)line_buf, w * 2);
+}
+```
+
+**Bad** — 批量数据也用阻塞传输:
+```c
+// 错误：240x240 全屏填充 = 57600 次 HAL_SPI_Transmit 调用
+for (i = 0; i < h; i++)
+  for (j = 0; j < w; j++)
+    HAL_SPI_Transmit(&hspi1, &color, 2, 1000);  // 极慢!
+```
+
+### 6. Tests Required
+
+- [ ] 全屏填充 (240x240) 视觉验证无撕裂/错位
+- [ ] 图片显示 (40x40) 视觉验证数据完整
+- [ ] LCD 初始化序列正常完成（寄存器写入不报错）
+- [ ] 构建: `cmake --build build/Debug` 0 错误
+- [ ] DMA 冲突测试：连续调用 LCD_Fill + LCD_ShowPicture 不卡死
+
+### 7. Wrong vs Correct
+
+**Wrong** — DMA 启动后不等完成就操作 CS:
+```c
+// 错误：CS 提前释放，SPI 总线还在 DMA 发送，数据损坏
+HAL_SPI_Transmit_DMA(&hspi1, buf, len);
+LCD_CS_Set();  // 太早！DMA 还在传输
+```
+
+**Correct** — 轮询标志位确认完成后再释放 CS:
+```c
+// 正确：DMA 完全结束后才释放 CS
+spi1_dma_done = 0;
+LCD_CS_Clr();
+HAL_SPI_Transmit_DMA(&hspi1, buf, len);
+while (!spi1_dma_done);
+LCD_CS_Set();
+```
+
+### Design Decision: 单字节阻塞 / 批量 DMA 混合策略
+
+**Context**: TFT LCD 通过 SPI 通信，涉及两种操作：寄存器命令（1-5 字节，需要精确 DC/CS 时序）和像素数据（可达 KB 级）。
+
+**Options Considered**:
+1. 全部使用 DMA — 单字节寄存器写入也走 DMA，DMA 建立/等待开销大于实际传输
+2. 全部使用阻塞 — 全屏填充 240x240=57600 像素 = 115200 次阻塞调用，极慢
+3. 混合策略 — 寄存器/命令走阻塞，批量像素数据走 DMA
+
+**Decision**: 选择混合策略（选项 3）。`LCD_Writ_Bus`（寄存器写入）保持 `HAL_SPI_Transmit` 阻塞，`LCD_WriteBytes`（批量数据）使用 `HAL_SPI_Transmit_DMA` + 轮询等待。
+
+### Gotcha: SPI IRQ 和 DMA IRQ 必须同时使能
+
+> **Warning**: `HAL_SPI_Transmit_DMA` 内部开启 TXDMAEN，但同时使能 SPI_IT_ERR 中断。DMA 传输完成由 DMA Stream IRQ 处理，但 ERR 中断需要 SPI IRQ 处理。如果只开 DMA IRQ 而忽略 SPI IRQ，SPI 出错时会丢失中断响应。
+>
+> CubeMX 配置 SPI1 DMA 后会自动生成两者，不要手动删除 SPI1_IRQHandler。
+
+### Convention: DMA 完成标志命名
+
+- 标志变量: `spi<X>_dma_done`（volatile uint8_t, 1=空闲 0=忙）
+- 回调函数: `HAL_SPI_TxCpltCallback`（HAL 弱函数覆盖，按 Instance 过滤）
+
+---
+
 ## Coding Style
 
 - **Doxygen comments** on functions: `@brief`, `@param`, `@retval` (matches STM32 HAL style)
@@ -97,7 +248,12 @@ void MX_GPIO_Init(void) {
 
 This is a learning project with no automated test framework. Testing is done via:
 
-1. Build verification: `cmake --build build/`
+1. Build verification:
+   ```
+   C:\Users\zhoulv\AppData\Local\stm32cube\bundles\cmake\4.2.3+st.1\bin\cmake.exe --build C:\Users\zhoulv\OneDrive\WorkPlace\stm32\LED_F407\build\Debug
+   ```
+   (短形式: `cmake --build build/Debug`，前提是 cmake/ninja/arm-gcc 在 PATH 中)
+
 2. Flash to hardware: via ST-LINK debugger
 3. Manual verification: observe LED behavior, check debugger output
 
