@@ -235,6 +235,310 @@ LCD_CS_Set();
 
 ---
 
+## FreeRTOS Task Architecture
+
+> 三任务架构：呼吸灯走 ISR，UART 回显和传感器采集各占一个任务。
+
+### 1. Scope / Trigger
+
+- Trigger: CubeMX 生成 FreeRTOS 后，需要将裸机 `App_MainLoop` 拆分为多任务
+- 关键约束：呼吸灯 PB2 不支持硬件 TIM 输出通道（STM32F407 PB2 无定时器 AF），必须用软件 PWM
+
+### 2. Signatures
+
+```c
+// freertos.c — 任务定义
+osThreadId_t echoTaskHandle;
+const osThreadAttr_t echoTask_attributes = {
+  .name = "Echo", .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+osThreadId_t sensorTaskHandle;
+const osThreadAttr_t sensorTask_attributes = {
+  .name = "Sensor", .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
+
+// main.c — 任务入口（在 main.h 中声明）
+void App_EchoTask(void *argument);
+void App_SensorTask(void *argument);
+
+// TIM8 ISR（one-shot PWM，见下一节）
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+```
+
+### 3. Contracts
+
+**任务职责与优先级**:
+
+| 任务 | 优先级 | 执行频率 | 职责 |
+|------|--------|---------|------|
+| TIM8 ISR | IRQ pri=5 | 200Hz (可变) | 呼吸灯 PWM，GPIO 翻转 + 状态机推进 |
+| EchoTask | Normal | 1ms | DMA 回显轮询 + 按键处理 |
+| SensorTask | BelowNormal | 100ms/500ms | ADC 打印 + VOFA USB CDC 发送 |
+| defaultTask | Normal | 1s | USB CDC 初始化 + idle |
+| TIM6 ISR | IRQ pri=5 | 1ms | HAL_IncTick → FreeRTOS 调度 |
+
+**定时器分配**:
+
+| 定时器 | 角色 | 配置 |
+|--------|------|------|
+| TIM6 | SYS 时基 | 1ms 固定周期 → `HAL_IncTick` |
+| TIM8 | 呼吸灯 PWM | One-shot 可变周期（ON/OFF 交替） |
+
+### 4. Validation & Error Matrix
+
+| Condition | Handling |
+|-----------|----------|
+| TIM8 周期设为 0 | 跳过该相，period=10000（全周期），反转 phase 不变 |
+| 多任务同时 printf | `__io_putchar` 在 `pr_buf_cnt==0` 时等待 `tx_busy` 再写缓冲区 |
+| DMA 回显启动失败 | `HAL_UART_Transmit_DMA` 返回非 HAL_OK 时置 `tx_busy=0` |
+
+### 5. Good/Base/Bad Cases
+
+**Good** — 呼吸灯在 ISR 中，零 busy-wait:
+```c
+// TIM8 ISR 中：翻转 GPIO + 改 ARR，耗时 ~2μs
+if (htim->Instance == TIM8) {
+  if (breath_phase == 0) {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_SET);
+    __HAL_TIM_SET_AUTORELOAD(&htim8, on_us - 1);
+    breath_phase = 1;
+  } else {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_RESET);
+    __HAL_TIM_SET_AUTORELOAD(&htim8, off_us - 1);
+    breath_phase = 0;
+    BreathAdvance();  // 纯整数计算
+  }
+  __HAL_TIM_SET_COUNTER(&htim8, 0);
+}
+```
+
+**Base** — 呼吸灯在高优先级任务中忙等（旧方案）:
+```c
+// RTOS 任务中 busy-wait，CPU 占用 0-100%
+void BreathingStep(void) {
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_SET);
+  delay_us(on_us);   // 忙等
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_RESET);
+  delay_us(off_us);  // 忙等
+}
+```
+
+**Bad** — 软件 PWM 在高优先级任务 + 全周期忙等 + 等周期触发:
+```c
+// 最差情况：TIM period = 10ms, busy-wait = 10ms, 任务从不 yield
+// 结果：所有其他任务饿死，系统可能看门狗复位
+```
+
+### 6. Tests Required
+
+- [ ] 呼吸灯视觉效果正常（无闪烁、过渡平滑）
+- [ ] 按键切换速度有效（3 档循环）
+- [ ] UART 回显正常工作
+- [ ] ADC 日志正常打印
+- [ ] CPU 空闲率 > 50%（在 BreathingTask 无忙等后）
+- [ ] 构建 0 错误
+
+### 7. Wrong vs Correct
+
+**Wrong** — ISR 中做 busy-wait:
+```c
+// 错误：ISR 中阻塞 10ms，所有低/同优先级中断被阻塞
+void TIM6_IRQHandler(void) {
+  GPIO_Set(); delay_us(5000); GPIO_Reset(); delay_us(5000);
+}
+```
+
+**Correct** — One-shot ISR，只翻转 GPIO 和改寄存器:
+```c
+// 正确：ISR 耗时 ~2μs，立即返回
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+  if (htim->Instance == TIM8) {
+    // 翻转引脚 + __HAL_TIM_SET_AUTORELOAD + __HAL_TIM_SET_COUNTER
+  }
+}
+```
+
+### Design Decision: 呼吸灯走 ISR 而非 RTOS 任务
+
+**Context**: 呼吸灯需要精确微秒级 PWM 时序。PB2 不支持硬件 TIM 通道，只能用软件 PWM。
+
+**Options Considered**:
+1. 高优先级 RTOS 任务 + busy-wait — CPU 占用高，100% 占空比时饿死其他任务
+2. 低优先级 RTOS 任务 — PWM 有抖动，时间片切分可能打散 ON 相
+3. TIM8 one-shot ISR — 完全消除 busy-wait，ISR 只做 GPIO 翻转和寄存器写
+
+**Decision**: 选择 ISR 方案（选项 3）。TIM8 配置为 1μs 分辨率，每次 ISR 触发时翻转 PB2 并更新 ARR 切换到下一个相（ON→OFF 或 OFF→ON）。状态机推进（纯整数计算）也在 ISR 中完成。
+
+### Gotcha: STM32F407 PB2 无定时器 AF
+
+> **Warning**: STM32F407 LQFP100 封装上，PB2 的主要功能是 BOOT1。它没有 TIM2_CH4 或其他定时器输出通道。不能将 PB2 配置为硬件 PWM 输出。如果必须硬件 PWM，需改用 PA3 (TIM2_CH4) 或 PB11 (TIM2_CH4) 等引脚。
+
+---
+
+## One-Shot Timer PWM Pattern
+
+> 使用基本定时器的可变周期 one-shot 模式实现软件 PWM，无需 busy-wait。
+
+### 1. Scope / Trigger
+
+- Trigger: 需要在无硬件 PWM 通道的 GPIO 上生成 PWM（如 PB2 呼吸灯）
+- 定时器：任意基本定时器（TIM6/TIM7）或通用定时器（TIM8 等）
+
+### 2. Signatures
+
+```c
+// 定时器配置（CubeMX）
+// TIM8: Prescaler=84-1, Period=10000-1, Internal Clock, NVIC enabled
+
+// 在 HAL_TIM_PeriodElapsedCallback 的 Callback 1 段处理 TIM8
+// 状态变量（static，只在 ISR 内访问）
+static uint8_t breath_phase;    // 0=进入ON, 1=进入OFF
+static int    breath_duty;      // 0~100
+
+// 状态机推进函数（ISR 内调用，纯整数运算）
+static void BreathAdvance(void);
+```
+
+### 3. Contracts
+
+**时序契约**:
+```
+TIM8 ARR = duty×100μs (ON)  →  TIM8 ARR = 10000 - duty×100μs (OFF)  →  循环
+     ↑ 翻转 PB2=HIGH              ↑ 翻转 PB2=LOW, 推进状态机
+```
+
+**边界处理**:
+- `duty=0`: 跳过 ON 相，ARR=10000（全 OFF），不切换 phase
+- `duty=100`: 跳过 OFF 相，ARR=10000（全 ON），不切换 phase
+
+### 4. Wrong vs Correct
+
+**Wrong** — 在 ISR 外修改 TIM8 寄存器:
+```c
+// 错误：ISR 和任务同时操作 htim8，竞态条件
+void SomeTask(void) {
+  __HAL_TIM_SET_AUTORELOAD(&htim8, new_period);  // 与 ISR 竞争!
+}
+```
+
+**Correct** — 所有 TIM8 操作集中在 ISR 内:
+```c
+// 正确：TIM8 周期切换仅在 ISR 中完成，无竞态
+if (htim->Instance == TIM8) {
+  __HAL_TIM_SET_AUTORELOAD(&htim8, period - 1);
+  __HAL_TIM_SET_COUNTER(&htim8, 0);
+}
+```
+
+### Design Decision: One-Shot 模式 vs 连续模式 + 中断节拍
+
+**Context**: TIM8 需要动态切换 ON/OFF 周期。
+
+**Decision**: 使用可变 ARR 方案。在 ISR 中更新 ARR 并清零计数器，下一个周期按新 ARR 计时。不需要硬件 OPM 位 — 只要在 ISR 中写 ARR + CNT=0 即可达到同样效果。
+
+---
+
+## printf DMA Buffer Concurrency Safety
+
+> `__io_putchar` 在 FreeRTOS 多任务环境下必须防止 DMA 发送期间缓冲区被覆盖。
+
+### 1. Scope / Trigger
+
+- Trigger: FreeRTOS 多任务同时调用 `printf`，DMA 正在发送 `pr_buf` 时下一个 printf 覆盖同一缓冲区
+
+### 2. Signatures
+
+```c
+// main.c USER CODE 0
+int __io_putchar(int ch)
+{
+  if (pr_buf_cnt == 0) {
+    while (tx_busy);  // 等上次 DMA 发完再复用 pr_buf
+  }
+  pr_buf[pr_buf_cnt++] = (uint8_t)ch;
+  if (pr_buf_cnt >= DMA_BUF_SIZE || ch == '\n') {
+    while (tx_busy);
+    // ... 启动 DMA TX ...
+  }
+  return ch;
+}
+```
+
+### 3. Contracts
+
+- `pr_buf_cnt == 0` 表示开始新一轮 printf，此时必须等待 `tx_busy == 0`（上次 DMA 发完）
+- `pr_buf_cnt > 0` 时不应等待（否则会死等，因为 DMA TX 还没启动）
+
+### 4. Wrong vs Correct
+
+**Wrong** — 不检查 `pr_buf_cnt` 就写缓冲区:
+```c
+// 错误：DMA 正在发送上一包 pr_buf，新数据覆盖 → 输出乱码
+pr_buf[pr_buf_cnt++] = ch;
+```
+
+**Correct** — 在新一轮 printf 开始前等待 DMA 空闲:
+```c
+// 正确：在新 buffer 的第一个字符写入前确保 DMA 已完成
+if (pr_buf_cnt == 0) { while (tx_busy); }
+pr_buf[pr_buf_cnt++] = ch;
+```
+
+### Gotcha: while(tx_busy) 的位置
+
+> **Warning**: `while(tx_busy)` 必须放在 `pr_buf_cnt == 0` 的 if 块内，不能放在函数开头无条件下。否则 printf 内部积累字符时也会等待（DMA TX 还没启动），造成死等。
+
+---
+
+## UART DMA Echo Error Recovery
+
+> `DMA_EchoCheck` 中 `HAL_UART_Transmit_DMA` 失败时必须清除 `tx_busy` 标志。
+
+### 1. Scope / Trigger
+
+- Trigger: `HAL_UART_Transmit_DMA` 可能因 UART/DMA 状态异常返回非 HAL_OK
+- 症状: `tx_busy` 永久为 1 → 所有后续 printf 和 echo 卡死在 `while(tx_busy)`
+
+### 2. Validation & Error Matrix
+
+| Condition | Recovery |
+|-----------|----------|
+| `HAL_UART_Transmit_DMA` 返回 HAL_ERROR/HAL_BUSY | `tx_busy = 0` 解锁，下次循环重试 |
+| `HAL_UART_Transmit_DMA` 返回 HAL_TIMEOUT | `tx_busy = 0` 解锁 |
+| `HAL_UART_Transmit_DMA` 返回 HAL_OK | 正常流程，TX complete callback 清 `tx_busy` |
+
+### 3. Wrong vs Correct
+
+**Wrong**:
+```c
+tx_busy = 1;
+HAL_UART_Transmit_DMA(&huart1, tx_buf, bytes);  // 失败时 tx_busy 永远为 1!
+```
+
+**Correct**:
+```c
+tx_busy = 1;
+if (HAL_UART_Transmit_DMA(&huart1, tx_buf, bytes) != HAL_OK)
+  tx_busy = 0;  // 解锁，避免死锁
+```
+
+### 4. Convention: Banner 走阻塞发送
+
+在 `osKernelStart()` 之前（调度器未启动），所有 UART 输出使用阻塞 `HAL_UART_Transmit` 而非 DMA printf。原因：
+- 调度器未运行，TX complete 回调中的 `tx_busy=0` 可能不会被及时处理
+- 阻塞发送可保证 banner 完整输出
+
+```c
+// main.c USER CODE 2 — banner 用阻塞发送
+for (int i = 0; i < 5; i++) {
+  HAL_UART_Transmit(&huart1, (uint8_t *)lines[i], strlen(lines[i]), 1000);
+}
+```
+
+---
+
 ## Coding Style
 
 - **Doxygen comments** on functions: `@brief`, `@param`, `@retval` (matches STM32 HAL style)
