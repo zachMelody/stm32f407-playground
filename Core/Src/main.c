@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 #include "adc.h"
 #include "dma.h"
 #include "spi.h"
@@ -78,7 +79,10 @@ static volatile uint16_t adc_val;    /* ADC DMA 目标（硬件自动刷新） *
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
+void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
+
+void App_MainLoop(void);
 
 /* USER CODE END PFP */
 
@@ -274,7 +278,6 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM6_Init();
   MX_ADC1_Init();
-  MX_USB_DEVICE_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   ADC1->CR2 |= ADC_CR2_DDS; /* 每次转换都触发 DMA（CubeMX 没开） */
@@ -307,6 +310,15 @@ int main(void)
   HAL_ADC_Start_DMA(&hadc1, (uint32_t *)&adc_val, 1); /* DMA 循环搬运 DR */
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
+  MX_FREERTOS_Init();
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
@@ -314,42 +326,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* ---- 每圈都查：串口 DMA 回显 ---- */
-    DMA_EchoCheck();
-
-    /* ---- 每圈都查：按键事件 ---- */
-    if (btn_pressed)
-    {
-      btn_pressed = 0;
-      breath_speed = (breath_speed + 1) % 3;
-      printf("[KEY] speed -> %s (%ds cycle)\r\n",
-             (breath_speed == 0) ? "fast" : (breath_speed == 1) ? "medium" : "slow",
-             (breath_speed == 0) ? 2 : (breath_speed == 1) ? 4 : 10);
-    }
-
-    /* ---- 每 10ms：呼吸灯步进（由 TIM6 中断驱动）---- */
-    if (tick_10ms)
-    {
-      tick_10ms = 0;
-      BreathingStep();
-
-      static int adc_tick     = 0;
-      static int vofa_tick    = 0;
-
-      if (++vofa_tick >= 10)  /* 每 100ms 推一条 VOFA 曲线数据 */
-      {
-        vofa_tick = 0;
-        uint32_t mv = adc_val * 3300 / 4095;
-        VOFA_Send(mv);                       /* USB CDC → VOFA+ */
-      }
-
-      if (++adc_tick >= 50)   /* 每 500ms 打印完整日志 */
-      {
-        adc_tick = 0;
-        ReadADC();
-      }
-    }
-
+    /* 调度器启动后不会到达这里，应用逻辑在 App_MainLoop() 中 */
   }
   /* USER CODE END 3 */
 }
@@ -414,9 +391,52 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 }
 
 /* TIM6 每 10ms 触发 → 驱动呼吸灯步进 */
+/* TIM8 为 FreeRTOS 时基 (1ms)，负责 HAL_IncTick() */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if (htim->Instance == TIM6) tick_10ms = 1;
+  if (htim->Instance == TIM6) {
+    tick_10ms = 1;
+  }
+  if (htim->Instance == TIM8) {
+    HAL_IncTick();
+  }
+}
+
+/* ================================================================
+ * App_MainLoop — 原 while(1) 循环体，供 FreeRTOS 任务调用
+ * ================================================================ */
+void App_MainLoop(void)
+{
+  DMA_EchoCheck();
+
+  if (btn_pressed)
+  {
+    btn_pressed = 0;
+    breath_speed = (breath_speed + 1) % 3;
+    printf("[KEY] speed -> %s (%ds cycle)\r\n",
+           (breath_speed == 0) ? "fast" : (breath_speed == 1) ? "medium" : "slow",
+           (breath_speed == 0) ? 2 : (breath_speed == 1) ? 4 : 10);
+  }
+
+  if (tick_10ms)
+  {
+    tick_10ms = 0;
+    BreathingStep();
+
+    static int adc_tick  = 0;
+    static int vofa_tick = 0;
+
+    if (++vofa_tick >= 10) {
+      vofa_tick = 0;
+      uint32_t mv = adc_val * 3300 / 4095;
+      VOFA_Send(mv);
+    }
+
+    if (++adc_tick >= 50) {
+      adc_tick = 0;
+      ReadADC();
+    }
+  }
 }
 
 /* USER CODE END 4 */
