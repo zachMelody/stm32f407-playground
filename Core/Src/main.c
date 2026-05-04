@@ -118,9 +118,14 @@ int __io_putchar(int ch)
  * ================================================================ */
 static void VOFA_Send(uint32_t mv)
 {
+  extern USBD_HandleTypeDef hUsbDeviceFS;
+  /* 跳过未连接/未打开串口的情况，非阻塞发送 */
+  if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) {
+    return;
+  }
   char buf[16];
   int len = snprintf(buf, sizeof(buf), "%lu\r\n", mv);
-  while (CDC_Transmit_FS((uint8_t *)buf, len) == USBD_BUSY);
+  CDC_Transmit_FS((uint8_t *)buf, len);
 }
 
 /* ================================================================
