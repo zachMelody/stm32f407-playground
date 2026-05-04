@@ -54,7 +54,8 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
-void App_MainLoop(void);
+void App_EchoTask(void *argument);
+void App_SensorTask(void *argument);
 
 /* USER CODE END EFP */
 
@@ -67,6 +68,8 @@ void App_MainLoop(void);
 #define TFT_CS_GPIO_Port GPIOA
 #define TFT_BL_Pin GPIO_PIN_6
 #define TFT_BL_GPIO_Port GPIOA
+#define MY_LED_Pin GPIO_PIN_2
+#define MY_LED_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

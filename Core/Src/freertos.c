@@ -55,12 +55,30 @@ const osThreadAttr_t defaultTask_attributes = {
   .priority = (osPriority_t) osPriorityNormal,
 };
 
+/* Definitions for EchoTask */
+osThreadId_t echoTaskHandle;
+const osThreadAttr_t echoTask_attributes = {
+  .name = "Echo",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+
+/* Definitions for SensorTask */
+osThreadId_t sensorTaskHandle;
+const osThreadAttr_t sensorTask_attributes = {
+  .name = "Sensor",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
+
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
+void StartEchoTask(void *argument);
+void StartSensorTask(void *argument);
 
 extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
@@ -96,7 +114,8 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  echoTaskHandle = osThreadNew(StartEchoTask, NULL, &echoTask_attributes);
+  sensorTaskHandle = osThreadNew(StartSensorTask, NULL, &sensorTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -120,10 +139,19 @@ void StartDefaultTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    App_MainLoop();
-    osDelay(1);
+    osDelay(1000);
   }
   /* USER CODE END StartDefaultTask */
+}
+
+void StartEchoTask(void *argument)
+{
+  App_EchoTask(argument);
+}
+
+void StartSensorTask(void *argument)
+{
+  App_SensorTask(argument);
 }
 
 /* Private application code --------------------------------------------------*/
