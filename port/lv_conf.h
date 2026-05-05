@@ -77,8 +77,17 @@
 /*====================
    OTHERS
  *====================*/
-#define LV_USE_SYSMON   0
-#define LV_USE_PERF_MONITOR 0
+/* 性能监控：右下角显示 FPS / CPU 占用，左下角显示堆使用 / 碎片率。
+  * 屏幕文字覆盖会轻微影响帧率测量（固定约 -2fps），调优完成后关闭。 */
+#define LV_USE_SYSMON 1
+#if LV_USE_SYSMON
+#define LV_SYSMON_GET_IDLE lv_timer_get_idle
+#define LV_USE_PERF_MONITOR 1
+#define LV_USE_PERF_MONITOR_POS LV_ALIGN_BOTTOM_RIGHT
+#define LV_USE_PERF_MONITOR_LOG_MODE 0
+#define LV_USE_MEM_MONITOR 1
+#define LV_USE_MEM_MONITOR_POS LV_ALIGN_BOTTOM_LEFT
+#endif
 
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 

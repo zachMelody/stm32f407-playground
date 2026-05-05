@@ -454,7 +454,6 @@ void App_LVGLTask(void *argument)
   // lv_demo_widgets();
 
   for (;;) {
-    lv_tick_inc(5);
     lv_timer_handler();
     osDelay(5);
   }
@@ -478,6 +477,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   if (htim->Instance == TIM6)
   {
     HAL_IncTick();
+    lv_tick_inc(1);   /* LVGL 时基：1ms 固定步进，独立于 LVGL 任务调度。
+                       * 必须独立，否则 lv_timer_get_idle() 永远算成 100% idle，
+                       * perf monitor 上 CPU 占用一直显示 0/不显示。 */
   }
   /* USER CODE BEGIN Callback 1 */
 

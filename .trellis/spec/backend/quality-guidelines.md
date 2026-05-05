@@ -233,6 +233,73 @@ LCD_CS_Set();
 - 标志变量: `spi<X>_dma_done`（volatile uint8_t, 1=空闲 0=忙）
 - 回调函数: `HAL_SPI_TxCpltCallback`（HAL 弱函数覆盖，按 Instance 过滤）
 
+### Pattern: 异步 SPI Flush（LVGL / 高吞吐渲染场景）
+
+> 当调用方**不需要立即知道 DMA 是否完成**（典型：LVGL `flush_cb`）时，用异步模式取代同步 `LCD_WriteBytes`，让 CPU 与 DMA 并行。
+
+**何时用同步 (`LCD_WriteBytes`)**：
+- BSP 老代码（`LCD_Fill`、`LCD_ShowChar` 等）调用方期望"返回即完成"
+- 上下文不便挂钩 ISR（如 `LCD_Init` 序列）
+
+**何时用异步**：
+- LVGL `disp_flush` 回调（LVGL 渲染下一 chunk 期间 DMA 在跑）
+- 大块帧缓冲推送（≥ 1KB）
+
+#### 异步流程
+
+```c
+// port/lv_port_disp.c
+static void disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
+    while (!spi1_dma_done);                  // 等上一次（兜底）
+    LCD_Address_Set(...);                    // 同步发命令（仍走 8-bit 轮询）
+    spi1_dma_done = 0;
+    LCD_CS_Clr();
+    HAL_SPI_Transmit_DMA(&hspi1, px, len);   // 启动后立即返回
+    // 不调 lv_display_flush_ready！由 ISR 完成
+}
+
+// SPI1 DMA TC ISR 上下文
+void SPI1_TxCplt_Hook(void) {            // 弱钩子，spi.c 默认空实现
+    LCD_CS_Set();
+    lv_display_flush_ready(s_disp);
+}
+```
+
+#### 钩子约定
+
+`Core/Src/spi.c` 提供 weak hook：
+```c
+__weak void SPI1_TxCplt_Hook(void) {}
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
+  if (hspi->Instance == SPI1) {
+    spi1_dma_done = 1;
+    SPI1_TxCplt_Hook();
+  }
+}
+```
+
+需要异步通知的模块（如 `port/lv_port_disp.c`）通过 **覆盖 weak symbol** 接入，无需修改 `spi.c`。BSP 同步路径仅依赖 `spi1_dma_done` 标志，不受影响。
+
+#### 16-bit SPI DMA 切换
+
+LVGL RGB565 内存布局是小端，但 ST7789 期望大端。两种解法：
+
+| 方案 | 实现 | 代价 |
+|------|------|------|
+| 软件 swap | `lv_draw_sw_rgb565_swap()` | ~0.5 ms/flush CPU 开销 |
+| **运行时切 16-bit SPI DMA** | flush 前改 `CR1 DFF` + DMA `PSIZE/MSIZE`，TC ISR 改回 8-bit | ~0 CPU，DMA 请求数减半 |
+
+推荐 16-bit，**前提是同一总线还有 8-bit 用户**（BSP 命令）：必须在 TC 中断里把 SPI 切回 8-bit，否则下次 BSP 调用会发出错位字节。
+
+#### Async Flush 错误回滚
+
+| 异常 | 处理 |
+|------|------|
+| `HAL_SPI_Transmit_DMA` 返回非 OK | 立即 `LCD_CS_Set()` + `spi1_dma_done = 1` + 切回 8-bit + `lv_display_flush_ready` |
+| TC ISR 漏触发（理论不应发生） | 下次 `disp_flush` 入口 `while(!spi1_dma_done)` 兜底 |
+
+切勿在异步回调里做长操作（保持 ISR < 10 µs）：仅做 GPIO + 标志位 + LVGL ready 通知。
+
 ---
 
 ## FreeRTOS Task Architecture

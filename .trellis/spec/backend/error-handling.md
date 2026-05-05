@@ -123,7 +123,21 @@ if (HAL_UART_Transmit_DMA(&huart1, tx_buf, bytes) != HAL_OK)
 | Busy Flag | Set By | Cleared By (Normal) | Cleared By (Error) |
 |-----------|--------|---------------------|--------------------|
 | `tx_busy` | `__io_putchar`, `DMA_EchoCheck` | `HAL_UART_TxCpltCallback` | Caller checks return value |
-| `spi1_dma_done` | `LCD_WriteBytes` | `HAL_SPI_TxCpltCallback` | Caller checks return value + timeout |
+| `spi1_dma_done` | `LCD_WriteBytes` (sync), `disp_flush` (async) | `HAL_SPI_TxCpltCallback` | Caller checks return value + timeout |
+
+### 3a. Async Notification Hook (SPI1)
+
+For modules that need additional ISR-context work after a SPI1 DMA TX completes (e.g. LVGL `lv_display_flush_ready`), override the weak hook declared in `Core/Inc/spi.h`:
+
+```c
+void SPI1_TxCplt_Hook(void);   // weak; default no-op in spi.c
+```
+
+Contract:
+- Called from `HAL_SPI_TxCpltCallback` **after** `spi1_dma_done = 1`.
+- Runs in DMA2_Stream3 IRQ context — keep ≤ 10 µs, no blocking calls.
+- Override site is responsible for releasing chip-select (`LCD_CS_Set()`) and any peripheral state changes (e.g. switching SPI back to 8-bit).
+- BSP sync path remains correct because it only polls `spi1_dma_done`; the hook is additive.
 
 ### 4. Validation & Error Matrix
 

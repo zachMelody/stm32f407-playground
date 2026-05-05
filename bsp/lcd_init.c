@@ -263,9 +263,9 @@ void LCD_Init(void)
 	LCD_WR_DATA8(0x00);   //设定gate起始位置
 	LCD_WR_DATA8(0x00);   //当gate没使用时，bit4(TMG)设为0
 
-	LCD_WR_REG(0x21);     
+	LCD_WR_REG(0x20);     //Display Inversion Off（之前用 0x21 INVON 导致整屏负片）
 
-	LCD_WR_REG(0x29);     
+	LCD_WR_REG(0x29);
 }
 
 
