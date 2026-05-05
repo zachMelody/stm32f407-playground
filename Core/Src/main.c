@@ -37,7 +37,6 @@
 #include "lv_port_indev.h"
 #include "pic.h"
 #include "usbd_cdc_if.h"
-#include <math.h>
 
 /* USER CODE END Includes */
 
@@ -76,6 +75,26 @@ static int      breath_repeats;   /* 每步重复次数 */
 static int      breath_speed;     /* 速度档位 0/1/2 */
 static volatile uint16_t adc_val;    /* ADC DMA 目标（硬件自动刷新） */
 static uint8_t  breath_phase;     /* TIM8 ISR: 0=进入ON, 1=进入OFF */
+
+/* ----------------------------------------------------------------
+ * EG2132 栅极驱动 PWM (PB1 = TIM3_CH4) + JBC C210 焊咀
+ * 由于 EG2132 自举电容（VB-VS）需要低边周期性导通来补充电，
+ * 占空比硬上限 95.0%（CCR4 ≤ 950）。
+ * ---------------------------------------------------------------- */
+#define PWM_DUTY_MAX_X10   950u   /* 95.0% (EG2132 bootstrap limit) */
+static volatile uint16_t g_pwm_duty_x10;     /* 0..950 (0.0~95.0%) */
+static volatile uint32_t g_voltage_mv;       /* 0..3000 mV (滤波后, VREF=3V) */
+
+/* UART 命令行缓冲（接收 "<int>\r" 或 "<int>\n" 设置占空比） */
+#define CMD_LINE_MAX  16
+static char     cmd_line[CMD_LINE_MAX];
+static uint8_t  cmd_len;
+
+/* ADC 8 点滑动平均环形缓冲 */
+#define ADC_AVG_N  8                    /* 必须是 2 的幂 */
+static uint16_t adc_ring[ADC_AVG_N];
+static uint8_t  adc_ring_idx;
+static uint8_t  adc_ring_filled;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -94,7 +113,73 @@ void App_LVGLTask(void *argument);
 
 extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim8;
+extern TIM_HandleTypeDef htim3;
 extern ADC_HandleTypeDef hadc1;
+
+/* ================================================================
+ * PWM (PB1 = TIM3_CH4) — 驱动 EG2132 / JBC C210
+ *   占空比单位为 0.1%，输入 0..950 对应 0.0~95.0%
+ *   超过 950 的输入会被 clamp（EG2132 自举电容硬上限）。
+ * ================================================================ */
+static void pwm_set_duty(uint16_t duty_x10)
+{
+  if (duty_x10 > PWM_DUTY_MAX_X10) duty_x10 = PWM_DUTY_MAX_X10;
+  g_pwm_duty_x10 = duty_x10;
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, duty_x10);
+}
+
+/* ================================================================
+ * UART 命令解析 — 行缓冲式
+ *   接受 "<整数>\r" 或 "<整数>\n"，整数 0..95 → 设置占空比
+ *   非数字 / 超长 / 越界 → 打印错误，缓冲清零
+ * ================================================================ */
+static void Cmd_Process(const char *line)
+{
+  uint32_t val    = 0;
+  int      digits = 0;
+
+  for (const char *p = line; *p; p++) {
+    if (*p < '0' || *p > '9') {
+      printf("[ERR] expect integer 0..95\r\n");
+      return;
+    }
+    val = val * 10u + (uint32_t)(*p - '0');
+    if (++digits > 3) {
+      printf("[ERR] expect integer 0..95\r\n");
+      return;
+    }
+  }
+  if (digits == 0) {
+    printf("[ERR] expect integer 0..95\r\n");
+    return;
+  }
+  if (val > 95) {
+    printf("[ERR] duty must be 0..95 (EG2132 bootstrap)\r\n");
+    return;
+  }
+  pwm_set_duty((uint16_t)(val * 10u));
+  printf("[OK] duty=%lu%%\r\n", (unsigned long)val);
+}
+
+/* 将一个 RX 字节喂给行缓冲；遇 \r 或 \n 触发解析 */
+static void Cmd_FeedByte(uint8_t ch)
+{
+  if (ch == '\r' || ch == '\n') {
+    if (cmd_len > 0) {
+      cmd_line[cmd_len] = '\0';
+      Cmd_Process(cmd_line);
+      cmd_len = 0;
+    }
+    return;
+  }
+  if (cmd_len < CMD_LINE_MAX - 1) {
+    cmd_line[cmd_len++] = (char)ch;
+  } else {
+    /* 溢出：清空缓冲并告警，避免被卡住 */
+    cmd_len = 0;
+    printf("[ERR] line too long (max %d)\r\n", CMD_LINE_MAX - 1);
+  }
+}
 
 /* ================================================================
  * printf 重定向到串口 DMA
@@ -156,7 +241,9 @@ static void DMA_EchoCheck(void)
     uint32_t pos = (DMA_BUF_SIZE - rx_last_ndtr) % DMA_BUF_SIZE;
     for (uint32_t i = 0; i < bytes; i++)
     {
-      tx_buf[i] = rx_buf[pos];
+      uint8_t ch = rx_buf[pos];
+      tx_buf[i] = ch;
+      Cmd_FeedByte(ch);   /* 同步喂给命令解析器 */
       pos = (pos + 1) % DMA_BUF_SIZE;
     }
 
@@ -194,37 +281,29 @@ static void BreathAdvance(void)
 }
 
 /* ================================================================
- * ADC 采集 NTC 温度（每 500ms 调用一次）
+ * ADC 采集 + 8 点滑动平均，更新 g_voltage_mv
  *
- * 硬件：3.0V ── 10kΩ ──┬── PA5 ── NTC ── GND
- *                      │
- *       ADC 参考 = VDDA = 3.3V（与 3V 供电不同！）
+ * 硬件：PC1 → ADC1_IN11，VREF = 3.0 V（外部基准）
+ *   V_mv = raw × 3000 / 4095
  *
- * 计算：
- *   V_pin   = raw × 3.3V / 4095           (ADC 读数 → 引脚电压)
- *   R_ntc   = 10kΩ × V_pin / (3.0V - V_pin)  (分压 → NTC 电阻)
- *   T       = B 参数公式                    (B=3950, R25=10kΩ)
- *
- * ※ 不用 %f（newlib-nano 不支持），全部转成整数打印
+ * DMA 已在后台连续填充 adc_val（CIRC 模式），调用者只需周期性
+ * 触发本函数即可推进滤波环形缓冲。
  * ================================================================ */
-static void ReadADC(void)
+static void ADC_UpdateFiltered(void)
 {
-  uint32_t raw = adc_val;                        /* DMA 一直在搬，读内存即得 */
-  uint32_t mv    = raw * 3300 / 4095;               /* ADC 参考 = 3.3V */
+  /* 推入新样本 */
+  adc_ring[adc_ring_idx] = adc_val;
+  adc_ring_idx = (adc_ring_idx + 1u) & (ADC_AVG_N - 1u);
+  if (adc_ring_idx == 0u) adc_ring_filled = 1u;
 
-  /* 分压：V_pin = 3.0V × R_ntc/(10k+R_ntc) → R_ntc = 10k × V_pin/(3.0V-V_pin) */
-  uint32_t r_ntc = (mv < 3000) ? (10000u * mv / (3000 - mv)) : 999999;
+  /* 计算窗口内的平均（首轮使用已填充的部分） */
+  uint8_t  n   = adc_ring_filled ? ADC_AVG_N : adc_ring_idx;
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < n; i++) sum += adc_ring[i];
+  uint32_t raw_avg = (n == 0u) ? 0u : (sum / n);
 
-  /* B 参数计算温度（内部浮点运算，输出转整数） */
-  float  r_f  = (float)r_ntc;
-  float  t_k  = 1.0f / (1.0f / 298.15f + logf(r_f / 10000.0f) / 3950.0f);
-  float  t_c  = t_k - 273.15f;
-  int    ti   = (int)t_c;
-  int    td   = (int)((t_c - ti) * 10.0f);
-  if (td < 0) td = -td;
-
-  printf("[ADC] raw=%4lu  V=%lumV  R=%luOhm  T=%d.%dC\r\n",
-         raw, mv, r_ntc, ti, td);
+  /* VREF=3V，量程 4095 */
+  g_voltage_mv = raw_avg * 3000u / 4095u;
 }
 
 /* USER CODE END 0 */
@@ -265,6 +344,7 @@ int main(void)
   MX_ADC1_Init();
   MX_SPI1_Init();
   MX_TIM8_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   ADC1->CR2 |= ADC_CR2_DDS; /* 每次转换都触发 DMA（CubeMX 没开） */
 
@@ -272,12 +352,13 @@ int main(void)
   {
     const char *lines[] = {
       "\r\n========================================\r\n",
-      "  STM32F407 USART1 DMA Test\r\n",
-      "  Baud: 115200  8N1\r\n",
-      "  Echo mode: type anything\r\n",
+      "  STM32F407 PWM/ADC Controller\r\n",
+      "  Baud: 115200  8N1   VREF: 3.0V\r\n",
+      "  PWM: PB1 = TIM3_CH4 @ 1kHz\r\n",
+      "  Cmd: type 0..95 + Enter -> set duty (EG2132 limit)\r\n",
       "========================================\r\n\r\n",
     };
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < (int)(sizeof(lines)/sizeof(lines[0])); i++) {
       HAL_UART_Transmit(&huart1, (uint8_t *)lines[i], strlen(lines[i]), 1000);
     }
   }
@@ -288,11 +369,12 @@ int main(void)
   lv_port_disp_init();
   lv_port_indev_init();
 
-  /* 启动 DMA 接收 + 呼吸灯 TIM8 + ADC */
+  /* 启动 DMA 接收 + 呼吸灯 TIM8 + ADC + PB1 PWM */
   rx_last_ndtr = DMA_BUF_SIZE;
   HAL_UART_Receive_DMA(&huart1, (uint8_t *)rx_buf, DMA_BUF_SIZE);
   HAL_TIM_Base_Start_IT(&htim8);   /* 呼吸灯 one-shot PWM（TIM6 由 HAL_InitTick 管理） */
   HAL_ADC_Start_DMA(&hadc1, (uint32_t *)&adc_val, 1);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);   /* PB1 PWM 启动，初始 CCR4=0 → 0% */
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -409,7 +491,8 @@ void App_EchoTask(void *argument)
 }
 
 /* ================================================================
- * SensorTask — 低于普通优先级，ADC 采集 + VOFA 发送
+ * SensorTask — 低于普通优先级，ADC 采集 + 滤波 + VOFA 推送
+ *   每 100 ms 推进一次滤波；每 500 ms 打印一次状态
  * ================================================================ */
 void App_SensorTask(void *argument)
 {
@@ -419,42 +502,79 @@ void App_SensorTask(void *argument)
   for (;;) {
     osDelay(100);
 
-    uint32_t mv = adc_val * 3300 / 4095;
-    VOFA_Send(mv);
+    ADC_UpdateFiltered();
+    VOFA_Send(g_voltage_mv);
 
     static int tick = 0;
     if (++tick >= 5) {
       tick = 0;
-      ReadADC();
+      printf("[STAT] V=%lumV  PWM=%u.%u%%\r\n",
+             (unsigned long)g_voltage_mv,
+             (unsigned)(g_pwm_duty_x10 / 10u),
+             (unsigned)(g_pwm_duty_x10 % 10u));
     }
   }
 }
 
+/* ================================================================
+ * LVGLTask — 周期渲染主界面：
+ *   PWM xx.x %  (大字)
+ *   [████████░░░░░░░░░]  进度条 (0..1000 → 0..100%)
+ *   V xx.xxx V  (大字)
+ * 更新频率 ~5 fps，避免抢占 CPU
+ * ================================================================ */
 void App_LVGLTask(void *argument)
 {
   (void)argument;
 
-  /* 创建示例界面 */
-  lv_obj_t * scr = lv_screen_active();
+  /* 主屏：黑底 */
+  lv_obj_t *scr = lv_screen_active();
+  lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-  lv_obj_t *test = lv_obj_create(scr);
-  lv_obj_set_size(test, 320, 240);
-  lv_obj_set_pos(test, 0, 0);
-  lv_obj_set_style_bg_color(test, lv_color_hex(0xFF0000), 0);
-  lv_obj_set_style_bg_opa(test, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(test, 0, 0);
+  /* PWM 数值（大字） */
+  lv_obj_t *lbl_pwm = lv_label_create(scr);
+  lv_obj_set_style_text_color(lbl_pwm, lv_color_white(), 0);
+  lv_obj_set_style_text_font(lbl_pwm, &lv_font_montserrat_28, 0);
+  lv_label_set_text(lbl_pwm, "PWM   0.0 %");
+  lv_obj_align(lbl_pwm, LV_ALIGN_TOP_MID, 0, 30);
 
+  /* 进度条（PWM 0..1000） */
+  lv_obj_t *bar = lv_bar_create(scr);
+  lv_obj_set_size(bar, 260, 18);
+  lv_bar_set_range(bar, 0, 1000);
+  lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+  lv_obj_align(bar, LV_ALIGN_CENTER, 0, -10);
 
-  lv_obj_t * label = lv_label_create(scr);
-  lv_label_set_text(label, "LVGL 9.2 OK");
-  lv_obj_center(label);
+  /* 电压数值（大字） */
+  lv_obj_t *lbl_v = lv_label_create(scr);
+  lv_obj_set_style_text_color(lbl_v, lv_color_white(), 0);
+  lv_obj_set_style_text_font(lbl_v, &lv_font_montserrat_28, 0);
+  lv_label_set_text(lbl_v, "V    0.000 V");
+  lv_obj_align(lbl_v, LV_ALIGN_BOTTOM_MID, 0, -30);
 
   printf("[RTOS] LVGLTask started\r\n");
 
-  // lv_demo_widgets();
-
+  uint32_t refresh_cnt = 0;
   for (;;) {
     lv_timer_handler();
+
+    /* 每 ~200ms (40 × 5ms) 刷新一次显示数据 */
+    if (++refresh_cnt >= 40u) {
+      refresh_cnt = 0;
+      uint16_t duty = g_pwm_duty_x10;        /* 单字读取 */
+      uint32_t mv   = g_voltage_mv;          /* 单字读取 */
+
+      lv_label_set_text_fmt(lbl_pwm, "PWM  %u.%u %%",
+                            (unsigned)(duty / 10u),
+                            (unsigned)(duty % 10u));
+      lv_bar_set_value(bar, duty, LV_ANIM_OFF);
+
+      lv_label_set_text_fmt(lbl_v, "V   %u.%03u V",
+                            (unsigned)(mv / 1000u),
+                            (unsigned)(mv % 1000u));
+    }
+
     osDelay(5);
   }
 }

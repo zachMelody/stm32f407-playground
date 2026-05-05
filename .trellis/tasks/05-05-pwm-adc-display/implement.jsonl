@@ -1,0 +1,8 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "USER CODE markers and CubeMX project layout — critical for not breaking generated code"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "HAL return codes and Error_Handler pattern for TIM/PWM init"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "C coding standards and forbidden patterns"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "UART/printf logging conventions for command ack/error"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Multi-task data sharing (PWM/ADC values across LVGL/Sensor/Echo tasks)"}
+{"file": ".trellis/tasks/05-05-pwm-adc-display/prd.md", "reason": "Task PRD — full requirements, decisions, and file change list"}

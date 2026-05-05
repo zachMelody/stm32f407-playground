@@ -91,4 +91,7 @@
 
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 
+/* 启用大字号字体用于主显示数值（PWM/电压） */
+#define LV_FONT_MONTSERRAT_28 1
+
 #endif /* LV_CONF_H */
