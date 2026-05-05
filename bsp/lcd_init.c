@@ -258,8 +258,8 @@ void LCD_Init(void)
 	LCD_WR_DATA8(0x27);   
 	LCD_WR_DATA8(0x31);   
 
-	LCD_WR_REG(0xE4);     
-	LCD_WR_DATA8(0x1D);   //使用240行gate  (N+1)*8
+	LCD_WR_REG(0xE4);
+	LCD_WR_DATA8(0x27);   //使用320行gate  (N+1)*8  —— 320x240 面板必须用全部 320 gate
 	LCD_WR_DATA8(0x00);   //设定gate起始位置
 	LCD_WR_DATA8(0x00);   //当gate没使用时，bit4(TMG)设为0
 

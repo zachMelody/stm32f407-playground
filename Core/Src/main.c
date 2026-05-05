@@ -33,6 +33,8 @@
 #include "effects.h"
 #include "lcd.h"
 #include "lcd_init.h"
+#include "lv_port_disp.h"
+#include "lv_port_indev.h"
 #include "pic.h"
 #include "usbd_cdc_if.h"
 #include <math.h>
@@ -83,6 +85,7 @@ void MX_FREERTOS_Init(void);
 
 void App_EchoTask(void *argument);
 void App_SensorTask(void *argument);
+void App_LVGLTask(void *argument);
 
 /* USER CODE END PFP */
 
@@ -279,20 +282,11 @@ int main(void)
     }
   }
 
-  /* 初始化 TFT 显示屏 */
-  LCD_Init();
-  LCD_Fill(0, 0, 240, 240, WHITE);
-  LCD_ShowChinese(0, 0, "你好", BLUE, WHITE, 32, 0);
-  LCD_ShowString(0, 40, "LCD_W:", RED, WHITE, 16, 0);
-  LCD_ShowIntNum(48, 40, LCD_W, 3, RED, WHITE, 16);
-  LCD_ShowString(80, 40, "LCD_H:", RED, WHITE, 16, 0);
-  LCD_ShowIntNum(128, 40, LCD_H, 3, RED, WHITE, 16);
-  LCD_ShowString(0, 70, "Increaseing Nun:", RED, WHITE, 16, 0);
-  for (int j = 0; j < 3; j++) {
-    for (int i = 0; i < 6; i++) {
-      LCD_ShowPicture(40 * i, 120 + j * 40, 40, 40, gImage_1);
-    }
-  }
+  /* 初始化 TFT 显示屏（LVGL tick 未启动前用 HAL_Delay 替代） */
+  lv_init();
+  lv_delay_set_cb(HAL_Delay);
+  lv_port_disp_init();
+  lv_port_indev_init();
 
   /* 启动 DMA 接收 + 呼吸灯 TIM8 + ADC */
   rx_last_ndtr = DMA_BUF_SIZE;
@@ -304,6 +298,16 @@ int main(void)
   /* Init scheduler */
   osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
+
+  /* LVGL task */
+  {
+    const osThreadAttr_t lvglTask_attributes = {
+      .name = "LVGL",
+      .stack_size = 1024 * 4,
+      .priority = (osPriority_t) osPriorityNormal,
+    };
+    osThreadNew(App_LVGLTask, NULL, &lvglTask_attributes);
+  }
 
   /* Start scheduler */
   osKernelStart();
@@ -423,6 +427,36 @@ void App_SensorTask(void *argument)
       tick = 0;
       ReadADC();
     }
+  }
+}
+
+void App_LVGLTask(void *argument)
+{
+  (void)argument;
+
+  /* 创建示例界面 */
+  lv_obj_t * scr = lv_screen_active();
+
+  lv_obj_t *test = lv_obj_create(scr);
+  lv_obj_set_size(test, 320, 240);
+  lv_obj_set_pos(test, 0, 0);
+  lv_obj_set_style_bg_color(test, lv_color_hex(0xFF0000), 0);
+  lv_obj_set_style_bg_opa(test, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(test, 0, 0);
+
+
+  lv_obj_t * label = lv_label_create(scr);
+  lv_label_set_text(label, "LVGL 9.2 OK");
+  lv_obj_center(label);
+
+  printf("[RTOS] LVGLTask started\r\n");
+
+  // lv_demo_widgets();
+
+  for (;;) {
+    lv_tick_inc(5);
+    lv_timer_handler();
+    osDelay(5);
   }
 }
 

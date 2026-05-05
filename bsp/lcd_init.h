@@ -7,11 +7,11 @@
 #define u16 uint16_t
 #define u32 uint32_t
 
-#define USE_HORIZONTAL 0  //设置横屏或竖屏显示 0,1为横屏 2,3为竖屏
+#define USE_HORIZONTAL 2  //设置横屏或竖屏显示 0,1为横屏 2,3为竖屏
 
 
 #define LCD_W 240
-#define LCD_H 240
+#define LCD_H 320
 
 //-----------------LCD端口定义---------------- 
 
