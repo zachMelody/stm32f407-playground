@@ -26,7 +26,16 @@
 #define LV_STDARG_INCLUDE       <stdarg.h>
 
 #if LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN
-    #define LV_MEM_SIZE (64 * 1024U)
+    /* LVGL 堆放在 CCMRAM（F407 的 CCMRAM 只能被 CPU 访问，不能被 DMA 访问，
+     * 因此用于控件/字体/样式等内部对象，主 RAM 就腾出来给 DMA 可达的 draw buffer。
+     * 实际堆体 lvgl_heap[] 定义在 port/lv_port_disp.c，放 .ccmram 段。
+     *
+     * 用 LV_MEM_POOL_ALLOC 方式接入（LV_MEM_ADR 必须是整数常量，不能用 cast 表达式）。 */
+    #define LV_MEM_SIZE (48 * 1024U)
+    #ifndef __ASSEMBLER__
+        extern unsigned char lvgl_heap[];
+        #define LV_MEM_POOL_ALLOC(size)  ((void *)lvgl_heap)
+    #endif
 #endif
 
 /*====================
