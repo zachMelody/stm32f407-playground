@@ -38,6 +38,10 @@ extern SPI_HandleTypeDef hspi1;
 
 extern volatile uint8_t spi1_dma_done;
 
+/* 弱 hook：SPI1 DMA TX 完成时在 ISR 上下文被调用。
+ * lv_port_disp.c 重载它以完成 LVGL 异步 flush（释放 CS + lv_display_flush_ready）。 */
+void SPI1_TxCplt_Hook(void);
+
 /* USER CODE END Private defines */
 
 void MX_SPI1_Init(void);
