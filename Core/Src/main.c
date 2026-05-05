@@ -33,6 +33,7 @@
 #include "effects.h"
 #include "lcd.h"
 #include "lcd_init.h"
+#include "lv_demos.h"
 #include "lv_port_disp.h"
 #include "lv_port_indev.h"
 #include "pic.h"
@@ -434,24 +435,11 @@ void App_LVGLTask(void *argument)
 {
   (void)argument;
 
-  /* 创建示例界面 */
-  lv_obj_t * scr = lv_screen_active();
+  /* 运行 LVGL 官方 benchmark：自动跑 ~20 个渲染场景，结束后屏幕显示总表
+   * 指标：CPU 使用率 / FPS / Render 时间 / Flush 时间 */
+  lv_demo_benchmark();
 
-  lv_obj_t *test = lv_obj_create(scr);
-  lv_obj_set_size(test, 320, 240);
-  lv_obj_set_pos(test, 0, 0);
-  lv_obj_set_style_bg_color(test, lv_color_hex(0xFF0000), 0);
-  lv_obj_set_style_bg_opa(test, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(test, 0, 0);
-
-
-  lv_obj_t * label = lv_label_create(scr);
-  lv_label_set_text(label, "LVGL 9.2 OK");
-  lv_obj_center(label);
-
-  printf("[RTOS] LVGLTask started\r\n");
-
-  // lv_demo_widgets();
+  printf("[RTOS] LVGLTask started (benchmark)\r\n");
 
   for (;;) {
     lv_tick_inc(5);

@@ -39,7 +39,7 @@ add_subdirectory(cmake/stm32cubemx)
 
 # LVGL graphics library
 set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "")
-set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "")
+set(LV_CONF_BUILD_DISABLE_DEMOS OFF CACHE BOOL "")
 set(LV_CONF_BUILD_DISABLE_THORVG_INTERNAL ON CACHE BOOL "")
 set(LV_CONF_PATH ${CMAKE_CURRENT_SOURCE_DIR}/port/lv_conf.h CACHE STRING "")
 add_subdirectory(lvgl)
@@ -64,6 +64,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     bsp
     port
+    lvgl/demos
 )
 
 # Add project symbols (macros)
@@ -78,6 +79,7 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
     lvgl
+    lvgl_demos
 
     # Add user defined libraries
 )
