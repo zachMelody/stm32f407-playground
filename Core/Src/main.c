@@ -400,16 +400,6 @@ int main(void)
   osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
 
-  /* LVGL task */
-  {
-    const osThreadAttr_t lvglTask_attributes = {
-      .name = "LVGL",
-      .stack_size = 1024 * 4,
-      .priority = (osPriority_t) osPriorityNormal,
-    };
-    osThreadNew(App_LVGLTask, NULL, &lvglTask_attributes);
-  }
-
   /* Start scheduler */
   osKernelStart();
 
@@ -664,14 +654,13 @@ void App_LVGLTask(void *argument)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
-
+  if (htim->Instance == TIM6) {
+    lv_tick_inc(1);   /* LVGL 时基：1ms 步进，放 USER CODE 区防止 CubeMX 覆盖 */
+  }
   /* USER CODE END Callback 0 */
   if (htim->Instance == TIM6)
   {
     HAL_IncTick();
-    lv_tick_inc(1);   /* LVGL 时基：1ms 固定步进，独立于 LVGL 任务调度。
-                       * 必须独立，否则 lv_timer_get_idle() 永远算成 100% idle，
-                       * perf monitor 上 CPU 占用一直显示 0/不显示。 */
   }
   /* USER CODE BEGIN Callback 1 */
 
