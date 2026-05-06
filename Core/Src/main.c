@@ -21,6 +21,7 @@
 #include "cmsis_os.h"
 #include "adc.h"
 #include "dma.h"
+#include "i2c.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -37,6 +38,8 @@
 #include "lv_port_indev.h"
 #include "pic.h"
 #include "usbd_cdc_if.h"
+#include "i2c.h"
+#include "ina226.h"
 
 /* USER CODE END Includes */
 
@@ -95,6 +98,12 @@ static uint8_t  cmd_len;
 static uint16_t adc_ring[ADC_AVG_N];
 static uint8_t  adc_ring_idx;
 static uint8_t  adc_ring_filled;
+
+/* INA226 数据（SensorTask 写入，LVGLTask 读取） */
+static volatile uint32_t g_ina_bus_v_mv;   /* 总线电压 mV */
+static volatile int32_t  g_ina_current_ma; /* 电流 mA（有符号） */
+static volatile uint32_t g_ina_power_mw;   /* 功率 mW */
+static volatile uint8_t  g_ina_valid;      /* INA226 通信正常标志 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -342,6 +351,7 @@ int main(void)
   MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_ADC1_Init();
+  MX_I2C1_Init();
   MX_SPI1_Init();
   MX_TIM8_Init();
   MX_TIM3_Init();
@@ -361,6 +371,15 @@ int main(void)
     for (int i = 0; i < (int)(sizeof(lines)/sizeof(lines[0])); i++) {
       HAL_UART_Transmit(&huart1, (uint8_t *)lines[i], strlen(lines[i]), 1000);
     }
+  }
+
+  /* 初始化 INA226 电流传感器 */
+  if (INA226_Init(&hi2c1) != HAL_OK) {
+    printf("[INA226] init FAILED\r\n");
+    g_ina_valid = 0;
+  } else {
+    printf("[INA226] init OK\r\n");
+    g_ina_valid = 1;
   }
 
   /* 初始化 TFT 显示屏（LVGL tick 未启动前用 HAL_Delay 替代） */
@@ -508,8 +527,25 @@ void App_SensorTask(void *argument)
     static int tick = 0;
     if (++tick >= 5) {
       tick = 0;
-      printf("[STAT] V=%lumV  PWM=%u.%u%%\r\n",
+      /* 读 INA226 */
+      ina226_data_t ina;
+      if (INA226_ReadAll(&hi2c1, &ina) == HAL_OK) {
+        uint32_t bus_v_mv;
+        int32_t  current_ma;
+        uint32_t power_mw;
+        INA226_Convert(&ina, &bus_v_mv, &current_ma, &power_mw);
+        g_ina_bus_v_mv = bus_v_mv;
+        g_ina_current_ma = current_ma;
+        g_ina_power_mw = power_mw;
+        g_ina_valid = 1;
+      } else {
+        g_ina_valid = 0;
+      }
+      printf("[STAT] ADC=%lumV  INA:V=%lumV I=%ldmA P=%lumW  PWM=%u.%u%%\r\n",
              (unsigned long)g_voltage_mv,
+             (unsigned long)g_ina_bus_v_mv,
+             (long)g_ina_current_ma,
+             (unsigned long)g_ina_power_mw,
              (unsigned)(g_pwm_duty_x10 / 10u),
              (unsigned)(g_pwm_duty_x10 % 10u));
     }
@@ -518,9 +554,11 @@ void App_SensorTask(void *argument)
 
 /* ================================================================
  * LVGLTask — 周期渲染主界面：
+ *   INA226: Vbus xx.xxV  Curr xxxmA
+ *   INA226: Power x.xxW
  *   PWM xx.x %  (大字)
  *   [████████░░░░░░░░░]  进度条 (0..1000 → 0..100%)
- *   V xx.xxx V  (大字)
+ *   ADC  x.xxx V  (大字)
  * 更新频率 ~5 fps，避免抢占 CPU
  * ================================================================ */
 void App_LVGLTask(void *argument)
@@ -532,21 +570,35 @@ void App_LVGLTask(void *argument)
   lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-  /* PWM 数值（大字） */
+  /* --- INA226 总线电压 + 电流 --- */
+  lv_obj_t *lbl_ina_vi = lv_label_create(scr);
+  lv_obj_set_style_text_color(lbl_ina_vi, lv_color_hex(0x00C0FF), 0);
+  lv_obj_set_style_text_font(lbl_ina_vi, &lv_font_montserrat_14, 0);
+  lv_label_set_text(lbl_ina_vi, "INA:  --.-- V / --- mA");
+  lv_obj_align(lbl_ina_vi, LV_ALIGN_TOP_MID, 0, 8);
+
+  /* --- INA226 功率 --- */
+  lv_obj_t *lbl_ina_p = lv_label_create(scr);
+  lv_obj_set_style_text_color(lbl_ina_p, lv_color_hex(0x00C0FF), 0);
+  lv_obj_set_style_text_font(lbl_ina_p, &lv_font_montserrat_14, 0);
+  lv_label_set_text(lbl_ina_p, "PWR:  --.-- W");
+  lv_obj_align(lbl_ina_p, LV_ALIGN_TOP_MID, 0, 28);
+
+  /* --- PWM 数值（大字） --- */
   lv_obj_t *lbl_pwm = lv_label_create(scr);
   lv_obj_set_style_text_color(lbl_pwm, lv_color_white(), 0);
   lv_obj_set_style_text_font(lbl_pwm, &lv_font_montserrat_28, 0);
   lv_label_set_text(lbl_pwm, "PWM   0.0 %");
-  lv_obj_align(lbl_pwm, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_align(lbl_pwm, LV_ALIGN_TOP_MID, 0, 58);
 
-  /* 进度条（PWM 0..1000） */
+  /* --- 进度条（PWM 0..950） --- */
   lv_obj_t *bar = lv_bar_create(scr);
   lv_obj_set_size(bar, 260, 18);
   lv_bar_set_range(bar, 0, 1000);
   lv_bar_set_value(bar, 0, LV_ANIM_OFF);
   lv_obj_align(bar, LV_ALIGN_CENTER, 0, -10);
 
-  /* 电压数值（大字） */
+  /* --- ADC 电压（大字） --- */
   lv_obj_t *lbl_v = lv_label_create(scr);
   lv_obj_set_style_text_color(lbl_v, lv_color_white(), 0);
   lv_obj_set_style_text_font(lbl_v, &lv_font_montserrat_28, 0);
@@ -564,12 +616,32 @@ void App_LVGLTask(void *argument)
       refresh_cnt = 0;
       uint16_t duty = g_pwm_duty_x10;        /* 单字读取 */
       uint32_t mv   = g_voltage_mv;          /* 单字读取 */
+      uint32_t ina_v  = g_ina_bus_v_mv;      /* 总线电压 mV */
+      int32_t  ina_i  = g_ina_current_ma;    /* 电流 mA */
+      uint32_t ina_p  = g_ina_power_mw;      /* 功率 mW */
+      uint8_t  ina_ok = g_ina_valid;
 
+      /* INA226 行 */
+      if (ina_ok) {
+        lv_label_set_text_fmt(lbl_ina_vi, "INA: %u.%02u V / %ld mA",
+                              (unsigned)(ina_v / 1000u),
+                              (unsigned)((ina_v % 1000u) / 10u),
+                              (long)ina_i);
+        lv_label_set_text_fmt(lbl_ina_p, "PWR: %u.%02u W",
+                              (unsigned)(ina_p / 1000u),
+                              (unsigned)((ina_p % 1000u) / 10u));
+      } else {
+        lv_label_set_text(lbl_ina_vi, "INA:  --.-- V / --- mA");
+        lv_label_set_text(lbl_ina_p, "PWR:  --.-- W");
+      }
+
+      /* PWM 行 */
       lv_label_set_text_fmt(lbl_pwm, "PWM  %u.%u %%",
                             (unsigned)(duty / 10u),
                             (unsigned)(duty % 10u));
       lv_bar_set_value(bar, duty, LV_ANIM_OFF);
 
+      /* ADC 行 */
       lv_label_set_text_fmt(lbl_v, "V   %u.%03u V",
                             (unsigned)(mv / 1000u),
                             (unsigned)(mv % 1000u));

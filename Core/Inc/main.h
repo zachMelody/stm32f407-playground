@@ -56,6 +56,7 @@ void Error_Handler(void);
 
 void App_EchoTask(void *argument);
 void App_SensorTask(void *argument);
+void App_LVGLTask(void *argument);
 
 /* USER CODE END EFP */
 

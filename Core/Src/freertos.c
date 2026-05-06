@@ -144,6 +144,10 @@ void StartDefaultTask(void *argument)
   /* USER CODE END StartDefaultTask */
 }
 
+
+
+/* Private application code --------------------------------------------------*/
+/* USER CODE BEGIN Application */
 void StartEchoTask(void *argument)
 {
   App_EchoTask(argument);
@@ -153,9 +157,5 @@ void StartSensorTask(void *argument)
 {
   App_SensorTask(argument);
 }
-
-/* Private application code --------------------------------------------------*/
-/* USER CODE BEGIN Application */
-
 /* USER CODE END Application */
 
