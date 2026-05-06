@@ -374,12 +374,15 @@ int main(void)
   }
 
   /* 初始化 INA226 电流传感器 */
-  if (INA226_Init(&hi2c1) != HAL_OK) {
-    printf("[INA226] init FAILED\r\n");
-    g_ina_valid = 0;
-  } else {
-    printf("[INA226] init OK\r\n");
-    g_ina_valid = 1;
+  {
+    HAL_StatusTypeDef rc = INA226_Init(&hi2c1);
+    if (rc != HAL_OK) {
+      printf("[INA226] init FAILED, rc=%d\r\n", rc);
+      g_ina_valid = 0;
+    } else {
+      printf("[INA226] init OK\r\n");
+      g_ina_valid = 1;
+    }
   }
 
   /* 初始化 TFT 显示屏（LVGL tick 未启动前用 HAL_Delay 替代） */
