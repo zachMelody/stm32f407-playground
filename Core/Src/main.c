@@ -302,8 +302,8 @@ static void ADC_UpdateFiltered(void)
   for (uint8_t i = 0; i < n; i++) sum += adc_ring[i];
   uint32_t raw_avg = (n == 0u) ? 0u : (sum / n);
 
-  /* VREF=3V，量程 4095 */
-  g_voltage_mv = raw_avg * 3000u / 4095u;
+  /* VREF=3V, divider (68k+2.7k)/2.7k = 70700/2700 */
+  g_voltage_mv = raw_avg * 3000u / 4095u * 70700u / 2700u;
 }
 
 /* USER CODE END 0 */
