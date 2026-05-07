@@ -25,8 +25,8 @@
  */
 
 #include "lv_port_disp.h"
-#include "lcd.h"
-#include "lcd_init.h"
+#include "display/lcd.h"
+#include "display/lcd_init.h"
 #include "spi.h"
 
 #define DISP_HOR_RES    320

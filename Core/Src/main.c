@@ -30,16 +30,16 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "BMP.h"
-#include "effects.h"
-#include "lcd.h"
-#include "lcd_init.h"
+#include "image/BMP.h"
+#include "demo/effects.h"
+#include "display/lcd.h"
+#include "display/lcd_init.h"
 #include "lv_port_disp.h"
 #include "lv_port_indev.h"
-#include "pic.h"
+#include "image/pic.h"
 #include "usbd_cdc_if.h"
 #include "i2c.h"
-#include "ina226.h"
+#include "sensor/ina226.h"
 
 /* USER CODE END Includes */
 

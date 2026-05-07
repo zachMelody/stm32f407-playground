@@ -52,10 +52,10 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
-    bsp/ina226.c
-    bsp/lcd.c
-    bsp/lcd_init.c
-    bsp/effects.c
+    bsp/sensor/ina226.c
+    bsp/display/lcd.c
+    bsp/display/lcd_init.c
+    app/demo/effects.c
     port/lv_port_disp.c
     port/lv_port_indev.c
 )
@@ -64,6 +64,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     bsp
+    app
+    assets
     port
 )
 

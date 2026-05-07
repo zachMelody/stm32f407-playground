@@ -1,4 +1,4 @@
-#include "ina226.h"
+#include "sensor/ina226.h"
 
 static HAL_StatusTypeDef INA226_ReadReg(I2C_HandleTypeDef *hi2c,
                                         uint8_t reg, uint16_t *val)

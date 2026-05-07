@@ -1,4 +1,4 @@
-#include "lcd_init.h"
+#include "display/lcd_init.h"
 
 #include "spi.h"
 

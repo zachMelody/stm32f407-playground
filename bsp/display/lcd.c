@@ -1,6 +1,6 @@
-#include "lcd.h"
-#include "lcd_init.h"
-#include "lcdfont.h"
+#include "display/lcd.h"
+#include "display/lcd_init.h"
+#include "font/lcdfont.h"
 //#include "delay.h"
 
 #include "spi.h"

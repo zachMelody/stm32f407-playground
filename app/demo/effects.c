@@ -1,6 +1,6 @@
-#include "effects.h"
-#include "lcd.h"
-#include "lcd_init.h"
+#include "demo/effects.h"
+#include "display/lcd.h"
+#include "display/lcd_init.h"
 #include <stdlib.h>
 
 /*
