@@ -76,7 +76,6 @@ static int      breath_duty;      /* 当前亮度 0~100 */
 static int      breath_repeat;    /* 当前步内重复计数 */
 static int      breath_repeats;   /* 每步重复次数 */
 static int      breath_speed;     /* 速度档位 0/1/2 */
-static volatile uint16_t adc_val;    /* ADC DMA 目标（硬件自动刷新） */
 static uint8_t  breath_phase;     /* TIM8 ISR: 0=进入ON, 1=进入OFF */
 
 /* ----------------------------------------------------------------
@@ -87,17 +86,17 @@ static uint8_t  breath_phase;     /* TIM8 ISR: 0=进入ON, 1=进入OFF */
 #define PWM_DUTY_MAX_X10   950u   /* 95.0% (EG2132 bootstrap limit) */
 static volatile uint16_t g_pwm_duty_x10;     /* 0..950 (0.0~95.0%) */
 static volatile uint32_t g_voltage_mv;       /* 0..3000 mV (滤波后, VREF=3V) */
+static volatile uint16_t g_adc_raw;          /* ADC 原始值 0..4095（trimmed mean） */
 
 /* UART 命令行缓冲（接收 "<int>\r" 或 "<int>\n" 设置占空比） */
 #define CMD_LINE_MAX  16
 static char     cmd_line[CMD_LINE_MAX];
 static uint8_t  cmd_len;
 
-/* ADC 8 点滑动平均环形缓冲 */
-#define ADC_AVG_N  8                    /* 必须是 2 的幂 */
-static uint16_t adc_ring[ADC_AVG_N];
-static uint8_t  adc_ring_idx;
-static uint8_t  adc_ring_filled;
+/* ADC DMA 缓冲区 — 硬件连续填充 N 个样本，软件周期性采集后做 trimmed mean */
+#define ADC_SAMPLE_N  16     /* 每周期采集的样本数 */
+#define ADC_TRIM_X    4     /* 每端丢弃的个数（去最大/最小各 X 个，保留中间 N-2X 个）*/
+static volatile uint16_t adc_buf[ADC_SAMPLE_N];
 
 /* INA226 数据（SensorTask 写入，LVGLTask 读取） */
 static volatile uint32_t g_ina_bus_v_mv;   /* 总线电压 mV */
@@ -290,29 +289,45 @@ static void BreathAdvance(void)
 }
 
 /* ================================================================
- * ADC 采集 + 8 点滑动平均，更新 g_voltage_mv
+ * ADC 采集 — 取 N 个样本，去掉最大/最小各 X 个，平均中间 N-2X 个
+ *
+ * DMA 后台以 ~42kHz 持续填充 adc_buf[ADC_SAMPLE_N]（CIRC 模式），
+ * 每个周期读取时缓冲区内的样本间隔仅 ~23μs，视为连续采样。
  *
  * 硬件：PC1 → ADC1_IN11，VREF = 3.0 V（外部基准）
  *   V_mv = raw × 3000 / 4095
- *
- * DMA 已在后台连续填充 adc_val（CIRC 模式），调用者只需周期性
- * 触发本函数即可推进滤波环形缓冲。
  * ================================================================ */
 static void ADC_UpdateFiltered(void)
 {
-  /* 推入新样本 */
-  adc_ring[adc_ring_idx] = adc_val;
-  adc_ring_idx = (adc_ring_idx + 1u) & (ADC_AVG_N - 1u);
-  if (adc_ring_idx == 0u) adc_ring_filled = 1u;
+  /* 从 DMA 缓冲区取快照（uint16_t 原子读取，无撕裂风险） */
+  uint16_t snap[ADC_SAMPLE_N];
+  for (uint8_t i = 0; i < ADC_SAMPLE_N; i++) {
+    snap[i] = adc_buf[i];
+  }
 
-  /* 计算窗口内的平均（首轮使用已填充的部分） */
-  uint8_t  n   = adc_ring_filled ? ADC_AVG_N : adc_ring_idx;
+  /* 冒泡排序 */
+  for (uint8_t i = 0; i < ADC_SAMPLE_N - 1u; i++) {
+    for (uint8_t j = i + 1u; j < ADC_SAMPLE_N; j++) {
+      if (snap[i] > snap[j]) {
+        uint16_t t = snap[i];
+        snap[i] = snap[j];
+        snap[j] = t;
+      }
+    }
+  }
+
+  /* 去头去尾后平均 */
   uint32_t sum = 0;
-  for (uint8_t i = 0; i < n; i++) sum += adc_ring[i];
-  uint32_t raw_avg = (n == 0u) ? 0u : (sum / n);
+  uint8_t  n   = ADC_SAMPLE_N - 2u * ADC_TRIM_X;
+  for (uint8_t i = ADC_TRIM_X; i < ADC_SAMPLE_N - ADC_TRIM_X; i++) {
+    sum += snap[i];
+  }
+  uint32_t raw_avg = sum / n;
 
-  /* VREF=3V, divider (68k+2.7k)/2.7k = 70700/2700 */
-  g_voltage_mv = raw_avg * 3000u / 4095u * 70700u / 2700u;
+  g_adc_raw = (uint16_t)raw_avg;
+
+  /* VREF=3V, divider (10k+1k)/1k = 11000/1000 */
+  g_voltage_mv = raw_avg * 3000u / 4095u * 11000u / 1000u;
 }
 
 /* USER CODE END 0 */
@@ -395,7 +410,7 @@ int main(void)
   rx_last_ndtr = DMA_BUF_SIZE;
   HAL_UART_Receive_DMA(&huart1, (uint8_t *)rx_buf, DMA_BUF_SIZE);
   HAL_TIM_Base_Start_IT(&htim8);   /* 呼吸灯 one-shot PWM（TIM6 由 HAL_InitTick 管理） */
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)&adc_val, 1);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, ADC_SAMPLE_N);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);   /* PB1 PWM 启动，初始 CCR4=0 → 0% */
   /* USER CODE END 2 */
 
@@ -504,7 +519,7 @@ void App_EchoTask(void *argument)
 
 /* ================================================================
  * SensorTask — 低于普通优先级，ADC 采集 + 滤波 + VOFA 推送
- *   每 100 ms 推进一次滤波；每 500 ms 打印一次状态
+ *   每 10 ms 推进一次滤波；每 500 ms 打印一次状态
  * ================================================================ */
 void App_SensorTask(void *argument)
 {
@@ -512,13 +527,13 @@ void App_SensorTask(void *argument)
   printf("[RTOS] SensorTask started\r\n");
 
   for (;;) {
-    osDelay(100);
+    osDelay(10);
 
     ADC_UpdateFiltered();
     VOFA_Send(g_voltage_mv);
 
     static int tick = 0;
-    if (++tick >= 5) {
+    if (++tick >= 50) {
       tick = 0;
       /* 读 INA226 */
       ina226_data_t ina;
@@ -591,6 +606,13 @@ void App_LVGLTask(void *argument)
   lv_bar_set_value(bar, 0, LV_ANIM_OFF);
   lv_obj_align(bar, LV_ALIGN_CENTER, 0, -10);
 
+  /* --- ADC 原始值 --- */
+  lv_obj_t *lbl_raw = lv_label_create(scr);
+  lv_obj_set_style_text_color(lbl_raw, lv_color_hex(0x888888), 0);
+  lv_obj_set_style_text_font(lbl_raw, &lv_font_montserrat_14, 0);
+  lv_label_set_text(lbl_raw, "RAW  0 / 4095");
+  lv_obj_align(lbl_raw, LV_ALIGN_BOTTOM_MID, 0, -60);
+
   /* --- ADC 电压（大字） --- */
   lv_obj_t *lbl_v = lv_label_create(scr);
   lv_obj_set_style_text_color(lbl_v, lv_color_white(), 0);
@@ -604,11 +626,12 @@ void App_LVGLTask(void *argument)
   for (;;) {
     lv_timer_handler();
 
-    /* 每 ~200ms (40 × 5ms) 刷新一次显示数据 */
-    if (++refresh_cnt >= 40u) {
+    /* 每 ~50ms (10 × 5ms) 刷新一次显示 → ~20 fps */
+    if (++refresh_cnt >= 10u) {
       refresh_cnt = 0;
       uint16_t duty = g_pwm_duty_x10;        /* 单字读取 */
       uint32_t mv   = g_voltage_mv;          /* 单字读取 */
+      uint16_t raw  = g_adc_raw;             /* 单字读取 */
       uint32_t ina_v  = g_ina_bus_v_mv;      /* 总线电压 mV */
       int32_t  ina_i  = g_ina_current_ma;    /* 电流 mA */
       uint32_t ina_p  = g_ina_power_mw;      /* 功率 mW */
@@ -635,6 +658,7 @@ void App_LVGLTask(void *argument)
       lv_bar_set_value(bar, duty, LV_ANIM_OFF);
 
       /* ADC 行 */
+      lv_label_set_text_fmt(lbl_raw, "RAW  %u / 4095", (unsigned)raw);
       lv_label_set_text_fmt(lbl_v, "V   %u.%03u V",
                             (unsigned)(mv / 1000u),
                             (unsigned)(mv % 1000u));
