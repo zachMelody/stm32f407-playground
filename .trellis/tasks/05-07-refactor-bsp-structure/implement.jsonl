@@ -1,0 +1,6 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "目录重构会影响 CMake、入口文件和驱动层边界"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "移动文件前检查重复常量、通用接口和遗留引用"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "目录重构需遵循 CubeMX 与 bsp/port 分层约定"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "目录调整后需保持构建、头文件风格和 USER CODE 约束"}
