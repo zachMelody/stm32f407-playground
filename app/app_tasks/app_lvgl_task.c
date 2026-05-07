@@ -17,6 +17,8 @@ void App_LVGLTask(void *argument)
   (void)argument;
 
   UiMainScreen_Init();
+  lv_obj_invalidate(lv_screen_active());
+  lv_refr_now(NULL);
   printf("[RTOS] LVGLTask started\r\n");
 
   for (;;) {

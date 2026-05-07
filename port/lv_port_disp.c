@@ -113,6 +113,7 @@ void lv_port_disp_init(void)
     LCD_Init();
 
     s_disp = lv_display_create(DISP_HOR_RES, DISP_VER_RES);
+    lv_display_set_default(s_disp);
     lv_display_set_flush_cb(s_disp, disp_flush);
     lv_display_set_buffers(s_disp, s_draw_buf1, s_draw_buf2, DISP_BUF_BYTES,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
