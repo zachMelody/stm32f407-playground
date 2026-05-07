@@ -53,11 +53,6 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
-void App_EchoTask(void *argument);
-void App_SensorTask(void *argument);
-void App_LVGLTask(void *argument);
-
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

@@ -30,16 +30,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "image/BMP.h"
-#include "demo/effects.h"
-#include "display/lcd.h"
-#include "display/lcd_init.h"
-#include "lv_port_disp.h"
-#include "lv_port_indev.h"
-#include "image/pic.h"
-#include "usbd_cdc_if.h"
-#include "i2c.h"
-#include "sensor/ina226.h"
+#include "lvgl.h"
+#include "app_tasks/app_init.h"
+#include "app_tasks/app_echo_task.h"
+#include "control/pwm_control.h"
+#include "control/uart_cmd.h"
 
 /* USER CODE END Includes */
 
@@ -61,48 +56,6 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-/* DMA 收发缓冲区 */
-#define DMA_BUF_SIZE      64
-static volatile uint8_t  rx_buf[DMA_BUF_SIZE];   /* RX 环形缓冲（DMA 后台填充） */
-static uint8_t           tx_buf[DMA_BUF_SIZE];   /* TX 线性缓冲（发送前拷贝） */
-static uint32_t          rx_last_ndtr;           /* RX NDTR 快照 */
-static volatile uint8_t  tx_busy;                /* TX DMA 是否正在发送 */
-static volatile uint8_t  btn_pressed;            /* PA0 按键按下标志（ISR 置位） */
-static uint8_t           pr_buf[DMA_BUF_SIZE];   /* printf 缓冲 */
-static int               pr_buf_cnt;             /* 缓冲区已用字节数 */
-/* 呼吸灯状态机 */
-static int      breath_dir = 1;   /* 1=渐亮, 0=渐暗 */
-static int      breath_duty;      /* 当前亮度 0~100 */
-static int      breath_repeat;    /* 当前步内重复计数 */
-static int      breath_repeats;   /* 每步重复次数 */
-static int      breath_speed;     /* 速度档位 0/1/2 */
-static uint8_t  breath_phase;     /* TIM8 ISR: 0=进入ON, 1=进入OFF */
-
-/* ----------------------------------------------------------------
- * EG2132 栅极驱动 PWM (PB1 = TIM3_CH4) + JBC C210 焊咀
- * 由于 EG2132 自举电容（VB-VS）需要低边周期性导通来补充电，
- * 占空比硬上限 95.0%（CCR4 ≤ 950）。
- * ---------------------------------------------------------------- */
-#define PWM_DUTY_MAX_X10   950u   /* 95.0% (EG2132 bootstrap limit) */
-static volatile uint16_t g_pwm_duty_x10;     /* 0..950 (0.0~95.0%) */
-static volatile uint32_t g_voltage_mv;       /* 0..3000 mV (滤波后, VREF=3V) */
-static volatile uint16_t g_adc_raw;          /* ADC 原始值 0..4095（trimmed mean） */
-
-/* UART 命令行缓冲（接收 "<int>\r" 或 "<int>\n" 设置占空比） */
-#define CMD_LINE_MAX  16
-static char     cmd_line[CMD_LINE_MAX];
-static uint8_t  cmd_len;
-
-/* ADC DMA 缓冲区 — 硬件连续填充 N 个样本，软件周期性采集后做 trimmed mean */
-#define ADC_SAMPLE_N  16     /* 每周期采集的样本数 */
-#define ADC_TRIM_X    4     /* 每端丢弃的个数（去最大/最小各 X 个，保留中间 N-2X 个）*/
-static volatile uint16_t adc_buf[ADC_SAMPLE_N];
-
-/* INA226 数据（SensorTask 写入，LVGLTask 读取） */
-static volatile uint32_t g_ina_bus_v_mv;   /* 总线电压 mV */
-static volatile int32_t  g_ina_current_ma; /* 电流 mA（有符号） */
-static volatile uint32_t g_ina_power_mw;   /* 功率 mW */
-static volatile uint8_t  g_ina_valid;      /* INA226 通信正常标志 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -110,225 +63,10 @@ void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 
-void App_EchoTask(void *argument);
-void App_SensorTask(void *argument);
-void App_LVGLTask(void *argument);
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-extern UART_HandleTypeDef huart1;
-extern TIM_HandleTypeDef htim8;
-extern TIM_HandleTypeDef htim3;
-extern ADC_HandleTypeDef hadc1;
-
-/* ================================================================
- * PWM (PB1 = TIM3_CH4) — 驱动 EG2132 / JBC C210
- *   占空比单位为 0.1%，输入 0..950 对应 0.0~95.0%
- *   超过 950 的输入会被 clamp（EG2132 自举电容硬上限）。
- * ================================================================ */
-static void pwm_set_duty(uint16_t duty_x10)
-{
-  if (duty_x10 > PWM_DUTY_MAX_X10) duty_x10 = PWM_DUTY_MAX_X10;
-  g_pwm_duty_x10 = duty_x10;
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, duty_x10);
-}
-
-/* ================================================================
- * UART 命令解析 — 行缓冲式
- *   接受 "<整数>\r" 或 "<整数>\n"，整数 0..95 → 设置占空比
- *   非数字 / 超长 / 越界 → 打印错误，缓冲清零
- * ================================================================ */
-static void Cmd_Process(const char *line)
-{
-  uint32_t val    = 0;
-  int      digits = 0;
-
-  for (const char *p = line; *p; p++) {
-    if (*p < '0' || *p > '9') {
-      printf("[ERR] expect integer 0..95\r\n");
-      return;
-    }
-    val = val * 10u + (uint32_t)(*p - '0');
-    if (++digits > 3) {
-      printf("[ERR] expect integer 0..95\r\n");
-      return;
-    }
-  }
-  if (digits == 0) {
-    printf("[ERR] expect integer 0..95\r\n");
-    return;
-  }
-  if (val > 95) {
-    printf("[ERR] duty must be 0..95 (EG2132 bootstrap)\r\n");
-    return;
-  }
-  pwm_set_duty((uint16_t)(val * 10u));
-  printf("[OK] duty=%lu%%\r\n", (unsigned long)val);
-}
-
-/* 将一个 RX 字节喂给行缓冲；遇 \r 或 \n 触发解析 */
-static void Cmd_FeedByte(uint8_t ch)
-{
-  if (ch == '\r' || ch == '\n') {
-    if (cmd_len > 0) {
-      cmd_line[cmd_len] = '\0';
-      Cmd_Process(cmd_line);
-      cmd_len = 0;
-    }
-    return;
-  }
-  if (cmd_len < CMD_LINE_MAX - 1) {
-    cmd_line[cmd_len++] = (char)ch;
-  } else {
-    /* 溢出：清空缓冲并告警，避免被卡住 */
-    cmd_len = 0;
-    printf("[ERR] line too long (max %d)\r\n", CMD_LINE_MAX - 1);
-  }
-}
-
-/* ================================================================
- * printf 重定向到串口 DMA
- * ================================================================ */
-int __io_putchar(int ch)
-{
-  if (pr_buf_cnt == 0) {
-    while (tx_busy);  /* 等上次 DMA 发完再复用 pr_buf */
-  }
-  pr_buf[pr_buf_cnt++] = (uint8_t)ch;
-  if (pr_buf_cnt >= DMA_BUF_SIZE || ch == '\n')
-  {
-    while (tx_busy);
-    __HAL_DMA_DISABLE(huart1.hdmatx);
-    huart1.hdmatx->State = HAL_DMA_STATE_READY;
-    huart1.gState = HAL_UART_STATE_READY;
-    tx_busy = 1;
-    if (HAL_UART_Transmit_DMA(&huart1, pr_buf, pr_buf_cnt) != HAL_OK)
-      tx_busy = 0;
-    pr_buf_cnt = 0;
-  }
-  return ch;
-}
-
-/* ================================================================
- * VOFA 数据走 USB CDC（FireWater 协议，每 100ms 一条）
- * ================================================================ */
-static void VOFA_Send(uint32_t mv)
-{
-  extern USBD_HandleTypeDef hUsbDeviceFS;
-  /* 跳过未连接/未打开串口的情况，非阻塞发送 */
-  if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) {
-    return;
-  }
-  char buf[16];
-  int len = snprintf(buf, sizeof(buf), "%lu\r\n", mv);
-  CDC_Transmit_FS((uint8_t *)buf, len);
-}
-
-/* ================================================================
- * 检查 DMA 是否收到了新数据，有则用 DMA 发送回显
- *
- * 数据流：USART → DMA2_Stream5 → rx_buf[环形] → 拷贝 → tx_buf → DMA2_Stream7 → USART
- *           (自动，CPU 不管)          检测 NDTR 变化     一次性 DMA 发送
- *
- * 原理：DMA 每收 1 字节，NDTR 寄存器减 1
- *       对比两次 NDTR 的差值 = 新收到的字节数
- * ================================================================ */
-static void DMA_EchoCheck(void)
-{
-  if (tx_busy) return;  /* 上次 DMA 发送还没结束，等下次循环再检查 */
-
-  uint32_t ndtr  = __HAL_DMA_GET_COUNTER(huart1.hdmarx);
-  uint32_t bytes = (rx_last_ndtr - ndtr + DMA_BUF_SIZE) % DMA_BUF_SIZE;
-
-  if (bytes > 0)
-  {
-    /* 从 RX 环形缓冲区拷贝到 TX 线性缓冲区 */
-    uint32_t pos = (DMA_BUF_SIZE - rx_last_ndtr) % DMA_BUF_SIZE;
-    for (uint32_t i = 0; i < bytes; i++)
-    {
-      uint8_t ch = rx_buf[pos];
-      tx_buf[i] = ch;
-      Cmd_FeedByte(ch);   /* 同步喂给命令解析器 */
-      pos = (pos + 1) % DMA_BUF_SIZE;
-    }
-
-    rx_last_ndtr = ndtr;
-    __HAL_DMA_DISABLE(huart1.hdmatx);
-    huart1.hdmatx->State = HAL_DMA_STATE_READY;
-    huart1.gState = HAL_UART_STATE_READY;
-    tx_busy = 1;
-    if (HAL_UART_Transmit_DMA(&huart1, tx_buf, bytes) != HAL_OK)
-      tx_busy = 0;
-  }
-}
-
-/* ================================================================
- * 呼吸灯状态机推进（TIM8 ISR 调用，纯计算，无 busy-wait）
- * ================================================================ */
-static void BreathAdvance(void)
-{
-  if (++breath_repeat >= breath_repeats)
-  {
-    breath_repeat = 0;
-    if (breath_dir)
-    {
-      if (++breath_duty >= 100) breath_dir = 0;
-    }
-    else
-    {
-      if (--breath_duty == 0)
-      {
-        breath_dir = 1;
-        breath_repeats = (breath_speed == 0) ? 1 : (breath_speed == 1) ? 2 : 5;
-      }
-    }
-  }
-}
-
-/* ================================================================
- * ADC 采集 — 取 N 个样本，去掉最大/最小各 X 个，平均中间 N-2X 个
- *
- * DMA 后台以 ~42kHz 持续填充 adc_buf[ADC_SAMPLE_N]（CIRC 模式），
- * 每个周期读取时缓冲区内的样本间隔仅 ~23μs，视为连续采样。
- *
- * 硬件：PC1 → ADC1_IN11，VREF = 3.0 V（外部基准）
- *   V_mv = raw × 3000 / 4095
- * ================================================================ */
-static void ADC_UpdateFiltered(void)
-{
-  /* 从 DMA 缓冲区取快照（uint16_t 原子读取，无撕裂风险） */
-  uint16_t snap[ADC_SAMPLE_N];
-  for (uint8_t i = 0; i < ADC_SAMPLE_N; i++) {
-    snap[i] = adc_buf[i];
-  }
-
-  /* 冒泡排序 */
-  for (uint8_t i = 0; i < ADC_SAMPLE_N - 1u; i++) {
-    for (uint8_t j = i + 1u; j < ADC_SAMPLE_N; j++) {
-      if (snap[i] > snap[j]) {
-        uint16_t t = snap[i];
-        snap[i] = snap[j];
-        snap[j] = t;
-      }
-    }
-  }
-
-  /* 去头去尾后平均 */
-  uint32_t sum = 0;
-  uint8_t  n   = ADC_SAMPLE_N - 2u * ADC_TRIM_X;
-  for (uint8_t i = ADC_TRIM_X; i < ADC_SAMPLE_N - ADC_TRIM_X; i++) {
-    sum += snap[i];
-  }
-  uint32_t raw_avg = sum / n;
-
-  g_adc_raw = (uint16_t)raw_avg;
-
-  /* VREF=3V, divider (10k+1k)/1k = 11000/1000 */
-  g_voltage_mv = raw_avg * 3000u / 4095u * 11000u / 1000u;
-}
 
 /* USER CODE END 0 */
 
@@ -371,47 +109,7 @@ int main(void)
   MX_TIM8_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  ADC1->CR2 |= ADC_CR2_DDS; /* 每次转换都触发 DMA（CubeMX 没开） */
-
-  /* banner 用阻塞发送，绕开 DMA 排查乱码问题 */
-  {
-    const char *lines[] = {
-      "\r\n========================================\r\n",
-      "  STM32F407 PWM/ADC Controller\r\n",
-      "  Baud: 115200  8N1   VREF: 3.0V\r\n",
-      "  PWM: PB1 = TIM3_CH4 @ 1kHz\r\n",
-      "  Cmd: type 0..95 + Enter -> set duty (EG2132 limit)\r\n",
-      "========================================\r\n\r\n",
-    };
-    for (int i = 0; i < (int)(sizeof(lines)/sizeof(lines[0])); i++) {
-      HAL_UART_Transmit(&huart1, (uint8_t *)lines[i], strlen(lines[i]), 1000);
-    }
-  }
-
-  /* 初始化 INA226 电流传感器 */
-  {
-    HAL_StatusTypeDef rc = INA226_Init(&hi2c1);
-    if (rc != HAL_OK) {
-      printf("[INA226] init FAILED, rc=%d\r\n", rc);
-      g_ina_valid = 0;
-    } else {
-      printf("[INA226] init OK\r\n");
-      g_ina_valid = 1;
-    }
-  }
-
-  /* 初始化 TFT 显示屏（LVGL tick 未启动前用 HAL_Delay 替代） */
-  lv_init();
-  lv_delay_set_cb(HAL_Delay);
-  lv_port_disp_init();
-  lv_port_indev_init();
-
-  /* 启动 DMA 接收 + 呼吸灯 TIM8 + ADC + PB1 PWM */
-  rx_last_ndtr = DMA_BUF_SIZE;
-  HAL_UART_Receive_DMA(&huart1, (uint8_t *)rx_buf, DMA_BUF_SIZE);
-  HAL_TIM_Base_Start_IT(&htim8);   /* 呼吸灯 one-shot PWM（TIM6 由 HAL_InitTick 管理） */
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, ADC_SAMPLE_N);
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);   /* PB1 PWM 启动，初始 CCR4=0 → 0% */
+  App_Init();
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -482,189 +180,15 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-/* TX DMA 发送完成 → 解锁 echo */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (huart->Instance == USART1) tx_busy = 0;
+  UartCmd_OnTxComplete(huart);
 }
 
-/* PA0 按键中断 → 置标志，由 EchoTask 处理 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == GPIO_PIN_0) btn_pressed = 1;
-}
-
-/* ================================================================
- * EchoTask — 普通优先级，DMA 回显 + 按键处理
- * ================================================================ */
-void App_EchoTask(void *argument)
-{
-  (void)argument;
-  printf("[RTOS] EchoTask started\r\n");
-
-  for (;;) {
-    DMA_EchoCheck();
-
-    if (btn_pressed) {
-      btn_pressed = 0;
-      breath_speed = (breath_speed + 1) % 3;
-      printf("[KEY] speed -> %s (%ds cycle)\r\n",
-             (breath_speed == 0) ? "fast" : (breath_speed == 1) ? "medium" : "slow",
-             (breath_speed == 0) ? 2 : (breath_speed == 1) ? 4 : 10);
-    }
-
-    osDelay(1);
-  }
-}
-
-/* ================================================================
- * SensorTask — 低于普通优先级，ADC 采集 + 滤波 + VOFA 推送
- *   每 10 ms 推进一次滤波；每 500 ms 打印一次状态
- * ================================================================ */
-void App_SensorTask(void *argument)
-{
-  (void)argument;
-  printf("[RTOS] SensorTask started\r\n");
-
-  for (;;) {
-    osDelay(10);
-
-    ADC_UpdateFiltered();
-    VOFA_Send(g_voltage_mv);
-
-    static int tick = 0;
-    if (++tick >= 50) {
-      tick = 0;
-      /* 读 INA226 */
-      ina226_data_t ina;
-      if (INA226_ReadAll(&hi2c1, &ina) == HAL_OK) {
-        uint32_t bus_v_mv;
-        int32_t  current_ma;
-        uint32_t power_mw;
-        INA226_Convert(&ina, &bus_v_mv, &current_ma, &power_mw);
-        g_ina_bus_v_mv = bus_v_mv;
-        g_ina_current_ma = current_ma;
-        g_ina_power_mw = power_mw;
-        g_ina_valid = 1;
-      } else {
-        g_ina_valid = 0;
-      }
-      printf("[STAT] ADC=%lumV  INA:V=%lumV I=%ldmA P=%lumW  PWM=%u.%u%%\r\n",
-             (unsigned long)g_voltage_mv,
-             (unsigned long)g_ina_bus_v_mv,
-             (long)g_ina_current_ma,
-             (unsigned long)g_ina_power_mw,
-             (unsigned)(g_pwm_duty_x10 / 10u),
-             (unsigned)(g_pwm_duty_x10 % 10u));
-    }
-  }
-}
-
-/* ================================================================
- * LVGLTask — 周期渲染主界面：
- *   INA226: Vbus xx.xxV  Curr xxxmA
- *   INA226: Power x.xxW
- *   PWM xx.x %  (大字)
- *   [████████░░░░░░░░░]  进度条 (0..1000 → 0..100%)
- *   ADC  x.xxx V  (大字)
- * 更新频率 ~5 fps，避免抢占 CPU
- * ================================================================ */
-void App_LVGLTask(void *argument)
-{
-  (void)argument;
-
-  /* 主屏：黑底 */
-  lv_obj_t *scr = lv_screen_active();
-  lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-
-  /* --- INA226 总线电压 + 电流 --- */
-  lv_obj_t *lbl_ina_vi = lv_label_create(scr);
-  lv_obj_set_style_text_color(lbl_ina_vi, lv_color_hex(0x00C0FF), 0);
-  lv_obj_set_style_text_font(lbl_ina_vi, &lv_font_montserrat_14, 0);
-  lv_label_set_text(lbl_ina_vi, "INA:  --.-- V / --- mA");
-  lv_obj_align(lbl_ina_vi, LV_ALIGN_TOP_MID, 0, 8);
-
-  /* --- INA226 功率 --- */
-  lv_obj_t *lbl_ina_p = lv_label_create(scr);
-  lv_obj_set_style_text_color(lbl_ina_p, lv_color_hex(0x00C0FF), 0);
-  lv_obj_set_style_text_font(lbl_ina_p, &lv_font_montserrat_14, 0);
-  lv_label_set_text(lbl_ina_p, "PWR:  --.-- W");
-  lv_obj_align(lbl_ina_p, LV_ALIGN_TOP_MID, 0, 28);
-
-  /* --- PWM 数值（大字） --- */
-  lv_obj_t *lbl_pwm = lv_label_create(scr);
-  lv_obj_set_style_text_color(lbl_pwm, lv_color_white(), 0);
-  lv_obj_set_style_text_font(lbl_pwm, &lv_font_montserrat_28, 0);
-  lv_label_set_text(lbl_pwm, "PWM   0.0 %");
-  lv_obj_align(lbl_pwm, LV_ALIGN_TOP_MID, 0, 58);
-
-  /* --- 进度条（PWM 0..950） --- */
-  lv_obj_t *bar = lv_bar_create(scr);
-  lv_obj_set_size(bar, 260, 18);
-  lv_bar_set_range(bar, 0, 1000);
-  lv_bar_set_value(bar, 0, LV_ANIM_OFF);
-  lv_obj_align(bar, LV_ALIGN_CENTER, 0, -10);
-
-  /* --- ADC 原始值 --- */
-  lv_obj_t *lbl_raw = lv_label_create(scr);
-  lv_obj_set_style_text_color(lbl_raw, lv_color_hex(0x888888), 0);
-  lv_obj_set_style_text_font(lbl_raw, &lv_font_montserrat_14, 0);
-  lv_label_set_text(lbl_raw, "RAW  0 / 4095");
-  lv_obj_align(lbl_raw, LV_ALIGN_BOTTOM_MID, 0, -60);
-
-  /* --- ADC 电压（大字） --- */
-  lv_obj_t *lbl_v = lv_label_create(scr);
-  lv_obj_set_style_text_color(lbl_v, lv_color_white(), 0);
-  lv_obj_set_style_text_font(lbl_v, &lv_font_montserrat_28, 0);
-  lv_label_set_text(lbl_v, "V    0.000 V");
-  lv_obj_align(lbl_v, LV_ALIGN_BOTTOM_MID, 0, -30);
-
-  printf("[RTOS] LVGLTask started\r\n");
-
-  uint32_t refresh_cnt = 0;
-  for (;;) {
-    lv_timer_handler();
-
-    /* 每 ~50ms (10 × 5ms) 刷新一次显示 → ~20 fps */
-    if (++refresh_cnt >= 10u) {
-      refresh_cnt = 0;
-      uint16_t duty = g_pwm_duty_x10;        /* 单字读取 */
-      uint32_t mv   = g_voltage_mv;          /* 单字读取 */
-      uint16_t raw  = g_adc_raw;             /* 单字读取 */
-      uint32_t ina_v  = g_ina_bus_v_mv;      /* 总线电压 mV */
-      int32_t  ina_i  = g_ina_current_ma;    /* 电流 mA */
-      uint32_t ina_p  = g_ina_power_mw;      /* 功率 mW */
-      uint8_t  ina_ok = g_ina_valid;
-
-      /* INA226 行 */
-      if (ina_ok) {
-        lv_label_set_text_fmt(lbl_ina_vi, "INA: %u.%02u V / %ld mA",
-                              (unsigned)(ina_v / 1000u),
-                              (unsigned)((ina_v % 1000u) / 10u),
-                              (long)ina_i);
-        lv_label_set_text_fmt(lbl_ina_p, "PWR: %u.%02u W",
-                              (unsigned)(ina_p / 1000u),
-                              (unsigned)((ina_p % 1000u) / 10u));
-      } else {
-        lv_label_set_text(lbl_ina_vi, "INA:  --.-- V / --- mA");
-        lv_label_set_text(lbl_ina_p, "PWR:  --.-- W");
-      }
-
-      /* PWM 行 */
-      lv_label_set_text_fmt(lbl_pwm, "PWM  %u.%u %%",
-                            (unsigned)(duty / 10u),
-                            (unsigned)(duty % 10u));
-      lv_bar_set_value(bar, duty, LV_ANIM_OFF);
-
-      /* ADC 行 */
-      lv_label_set_text_fmt(lbl_raw, "RAW  %u / 4095", (unsigned)raw);
-      lv_label_set_text_fmt(lbl_v, "V   %u.%03u V",
-                            (unsigned)(mv / 1000u),
-                            (unsigned)(mv % 1000u));
-    }
-
-    osDelay(5);
+  if (GPIO_Pin == GPIO_PIN_0) {
+    App_EchoTask_OnButtonPressed();
   }
 }
 
@@ -693,42 +217,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
   if (htim->Instance == TIM8)
   {
-    uint32_t on_us = breath_duty * 100;
-    uint32_t period;
-    uint8_t  advance = 0;
-
-    if (breath_phase == 0)
-    {
-      if (on_us > 0) {
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_SET);
-        period = on_us;
-        breath_phase = 1;
-      } else {
-        /* duty=0: 保持低电平，整个 10ms 周期不动 */
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_RESET);
-        period = 10000;
-        advance = 1;
-      }
-    }
-    else
-    {
-      advance = 1;
-      if (on_us < 10000) {
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_RESET);
-        period = 10000 - on_us;
-        breath_phase = 0;
-      } else {
-        /* duty=100: 保持高电平，整个 10ms 周期不动 */
-        period = 10000;
-      }
-    }
-
-    __HAL_TIM_SET_AUTORELOAD(&htim8, period - 1);
-    __HAL_TIM_SET_COUNTER(&htim8, 0);
-
-    if (advance) {
-      BreathAdvance();
-    }
+    PwmControl_OnTim8Elapsed();
   }
   /* USER CODE END Callback 1 */
 }

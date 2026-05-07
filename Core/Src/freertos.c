@@ -25,6 +25,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app_tasks/app_echo_task.h"
+#include "app_tasks/app_sensor_task.h"
+#include "app_tasks/app_lvgl_task.h"
 
 /* USER CODE END Includes */
 

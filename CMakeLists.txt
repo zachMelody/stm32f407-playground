@@ -56,6 +56,16 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     bsp/display/lcd.c
     bsp/display/lcd_init.c
     app/demo/effects.c
+    app/control/pwm_control.c
+    app/control/uart_cmd.c
+    app/sensor/adc_sampler.c
+    app/sensor/ina_monitor.c
+    app/ui/ui_main_screen.c
+    app/ui/lcd_text_renderer.c
+    app/app_tasks/app_init.c
+    app/app_tasks/app_echo_task.c
+    app/app_tasks/app_sensor_task.c
+    app/app_tasks/app_lvgl_task.c
     port/lv_port_disp.c
     port/lv_port_indev.c
 )
