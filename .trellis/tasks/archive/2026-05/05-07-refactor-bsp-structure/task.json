@@ -3,7 +3,7 @@
   "name": "refactor-bsp-structure",
   "title": "整理 STM32CubeMX 项目的 BSP 目录结构",
   "description": "梳理当前 bsp/port/app/assets 边界，收敛为可持续扩展的 STM32CubeMX 项目结构",
-  "status": "planning",
+  "status": "completed",
   "dev_type": "backend",
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "claude-agent",
   "assignee": "claude-agent",
   "createdAt": "2026-05-07",
-  "completedAt": null,
+  "completedAt": "2026-05-08",
   "branch": null,
   "base_branch": "master",
   "worktree_path": null,
@@ -42,7 +42,7 @@
       "action": "record-session"
     }
   ],
-  "commit": null,
+  "commit": "6573f88,dce7f21,c3560b3,9c7e521",
   "pr_url": null,
   "subtasks": [],
   "children": [],
@@ -57,6 +57,6 @@
     "port/lv_port_disp.c",
     ".trellis/spec/backend/directory-structure.md"
   ],
-  "notes": "",
+  "notes": "2026-05-08 按实际已完成状态归档。目录收敛到 bsp/display、bsp/sensor、app/{app_tasks,control,sensor,ui,demo}、assets/{font,image}；补做 ninja -C build/Debug 验证，exit 0（no work to do）。",
   "meta": {}
 }
