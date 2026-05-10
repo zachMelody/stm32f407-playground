@@ -4,6 +4,7 @@
 
 static lv_obj_t *s_lbl_ina_vi;
 static lv_obj_t *s_lbl_ina_p;
+static lv_obj_t *s_lbl_mode;
 static lv_obj_t *s_lbl_pwm;
 static lv_obj_t *s_bar_pwm;
 static lv_obj_t *s_lbl_tc;
@@ -35,23 +36,29 @@ void UiMainScreen_Init(void)
   lv_label_set_text(s_lbl_ina_p, "PWR:  --.-- W");
   lv_obj_align(s_lbl_ina_p, LV_ALIGN_TOP_MID, 0, 28);
 
+  s_lbl_mode = lv_label_create(scr);
+  lv_obj_set_style_text_color(s_lbl_mode, lv_color_hex(0x6C757D), 0);
+  lv_obj_set_style_text_font(s_lbl_mode, &lv_font_montserrat_14, 0);
+  lv_label_set_text(s_lbl_mode, "OFF   SET 300.0 C");
+  lv_obj_align(s_lbl_mode, LV_ALIGN_TOP_MID, 0, 48);
+
   s_lbl_pwm = lv_label_create(scr);
   lv_obj_set_style_text_color(s_lbl_pwm, lv_color_white(), 0);
   lv_obj_set_style_text_font(s_lbl_pwm, &lv_font_montserrat_28, 0);
   lv_label_set_text(s_lbl_pwm, "PWM   0.0 %");
-  lv_obj_align(s_lbl_pwm, LV_ALIGN_TOP_MID, 0, 58);
+  lv_obj_align(s_lbl_pwm, LV_ALIGN_TOP_MID, 0, 72);
 
   s_bar_pwm = lv_bar_create(scr);
   lv_obj_set_size(s_bar_pwm, 260, 18);
   lv_bar_set_range(s_bar_pwm, 0, 1000);
   lv_bar_set_value(s_bar_pwm, 0, LV_ANIM_OFF);
-  lv_obj_align(s_bar_pwm, LV_ALIGN_CENTER, 0, -10);
+  lv_obj_align(s_bar_pwm, LV_ALIGN_CENTER, 0, 0);
 
   s_lbl_tc = lv_label_create(scr);
   lv_obj_set_style_text_color(s_lbl_tc, lv_color_hex(0xFFB347), 0);
   lv_obj_set_style_text_font(s_lbl_tc, &lv_font_montserrat_14, 0);
   lv_label_set_text(s_lbl_tc, "TMP --.- C   TC ---- uV");
-  lv_obj_align(s_lbl_tc, LV_ALIGN_CENTER, 0, 20);
+  lv_obj_align(s_lbl_tc, LV_ALIGN_CENTER, 0, 28);
 
   s_lbl_raw = lv_label_create(scr);
   lv_obj_set_style_text_color(s_lbl_raw, lv_color_hex(0x888888), 0);
@@ -72,9 +79,11 @@ void UiMainScreen_Refresh(uint16_t duty_x10,
                           uint32_t voltage_mv,
                           uint16_t adc_raw,
                           const ina_monitor_snapshot_t *ina,
-                          const thermocouple_snapshot_t *tc)
+                          const thermocouple_snapshot_t *tc,
+                          const temperature_control_snapshot_t *ctrl)
 {
   uint32_t temp_abs_x10;
+  uint32_t set_abs_x10;
 
   if (!s_initialized || ina == NULL) {
     return;
@@ -97,6 +106,25 @@ void UiMainScreen_Refresh(uint16_t duty_x10,
                         (unsigned)(duty_x10 / 10u),
                         (unsigned)(duty_x10 % 10u));
   lv_bar_set_value(s_bar_pwm, duty_x10, LV_ANIM_OFF);
+
+  if (ctrl != NULL) {
+    lv_color_t mode_color = lv_color_hex(0x6C757D);
+
+    set_abs_x10 = (ctrl->setpoint_c_x10 < 0) ? (uint32_t)(-ctrl->setpoint_c_x10) : (uint32_t)ctrl->setpoint_c_x10;
+
+    if (ctrl->mode == TEMP_CTRL_MODE_AUTO) {
+      mode_color = lv_color_hex(0x2ECC71);
+    } else if (ctrl->mode == TEMP_CTRL_MODE_MANUAL) {
+      mode_color = lv_color_hex(0xF4D03F);
+    }
+
+    lv_obj_set_style_text_color(s_lbl_mode, mode_color, 0);
+    lv_label_set_text_fmt(s_lbl_mode, "%s   SET %s%lu.%01lu C",
+                          TemperatureControl_ModeName(ctrl->mode),
+                          (ctrl->setpoint_c_x10 < 0) ? "-" : "",
+                          (unsigned long)(set_abs_x10 / 10u),
+                          (unsigned long)(set_abs_x10 % 10u));
+  }
 
   if (tc != NULL && tc->has_sample != 0u) {
     temp_abs_x10 = (tc->temp_c_x10 < 0) ? (uint32_t)(-tc->temp_c_x10) : (uint32_t)tc->temp_c_x10;

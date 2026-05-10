@@ -1,0 +1,14 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/tasks/05-10-pid-temperature-control/prd.md", "reason": "Task PRD and accepted PID scope"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Keep control logic in app/control and preserve module boundaries"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Follow embedded C and CubeMX-safe editing rules"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Preserve safe fallback when samples are invalid or HAL calls fail"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing PWM and thermocouple paths instead of duplicating logic"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "PID feature spans UART control sensor sampling PWM and UI layers"}
+{"file": ".trellis/tasks/05-09-adc2-thermocouple-window-sampling/prd.md", "reason": "Previous thermocouple window-sampling task that PID depends on"}
+{"file": "app/control/pwm_control.c", "reason": "Existing heater duty execution and measurement-window suspension"}
+{"file": "app/control/uart_cmd.c", "reason": "Current serial command entry point to extend for auto/manual/off commands"}
+{"file": "app/sensor/thermocouple_sampler.c", "reason": "Temperature sample producer feeding the control loop"}
+{"file": "app/app_tasks/app_sensor_task.c", "reason": "Current periodic telemetry path and best place to trigger control updates"}
+{"file": "app/ui/ui_main_screen.c", "reason": "Current screen fields to extend with mode and setpoint"}

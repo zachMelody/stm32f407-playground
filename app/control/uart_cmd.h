@@ -13,6 +13,7 @@ uint8_t *UartCmd_GetRxBuffer(void);
 uint32_t UartCmd_GetRxBufferSize(void);
 void UartCmd_EchoCheck(void);
 void UartCmd_OnTxComplete(UART_HandleTypeDef *huart);
+void UartCmd_PrintStatus(void);
 
 #ifdef __cplusplus
 }

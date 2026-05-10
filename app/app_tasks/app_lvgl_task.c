@@ -1,6 +1,7 @@
 #include "app_tasks/app_lvgl_task.h"
 
 #include "control/pwm_control.h"
+#include "control/temperature_control.h"
 #include "sensor/adc_sampler.h"
 #include "sensor/ina_monitor.h"
 #include "sensor/thermocouple_sampler.h"
@@ -25,6 +26,7 @@ void App_LVGLTask(void *argument)
   for (;;) {
     ina_monitor_snapshot_t snapshot;
     thermocouple_snapshot_t tc_snapshot;
+    temperature_control_snapshot_t ctrl_snapshot;
 
     lv_timer_handler();
 
@@ -32,11 +34,13 @@ void App_LVGLTask(void *argument)
       refresh_cnt = 0u;
       InaMonitor_GetSnapshot(&snapshot);
       ThermocoupleSampler_GetSnapshot(&tc_snapshot);
+      TemperatureControl_GetSnapshot(&ctrl_snapshot);
       UiMainScreen_Refresh(PwmControl_GetDutyX10(),
                            AdcSampler_GetVoltageMv(),
                            AdcSampler_GetRaw(),
                            &snapshot,
-                           &tc_snapshot);
+                           &tc_snapshot,
+                           &ctrl_snapshot);
     }
 
     osDelay(5);

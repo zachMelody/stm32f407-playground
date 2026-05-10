@@ -2,6 +2,7 @@
 
 #include "app_tasks/app_echo_task.h"
 #include "control/pwm_control.h"
+#include "control/temperature_control.h"
 #include "control/uart_cmd.h"
 #include "lv_port_disp.h"
 #include "lv_port_indev.h"
@@ -30,7 +31,7 @@ void App_Init(void)
       "  STM32F407 PWM/ADC Controller\r\n",
       "  Baud: 115200  8N1   VREF: 3.0V\r\n",
       "  PWM: PB1 = TIM3_CH4 @ 1kHz\r\n",
-      "  Cmd: type 0..95 + Enter -> set duty (EG2132 limit)\r\n",
+      "  Cmd: auto <C> | man <pct> | off | stat\r\n",
       "========================================\r\n\r\n",
     };
     for (int i = 0; i < (int)(sizeof(lines) / sizeof(lines[0])); i++) {
@@ -56,6 +57,7 @@ void App_Init(void)
   HAL_TIM_Base_Start_IT(&htim8);
   PwmControl_Init();
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+  TemperatureControl_Init();
   HAL_ADC_Start_DMA(&hadc1,
                     (uint32_t *)AdcSampler_GetDmaBuffer(),
                     AdcSampler_GetDmaSampleCount());
