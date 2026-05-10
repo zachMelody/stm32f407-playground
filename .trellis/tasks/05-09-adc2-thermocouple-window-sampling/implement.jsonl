@@ -1,0 +1,18 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Keep Core/app/control/sensor boundaries correct while adding thermocouple path"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Follow HAL timer DMA callback and generated-code constraints"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Handle HAL start failures and restore runtime state safely"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Avoid mixing ADC1 bus-voltage logic into ADC2 thermocouple module"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Window timing crosses timer control ADC DMA and task telemetry layers"}
+{"file": "Core/Src/adc.c", "reason": "Current ADC1 ADC2 init and DMA wiring"}
+{"file": "Core/Src/tim.c", "reason": "Current TIM3 heater PWM TIM8 breathing and available timer pattern"}
+{"file": "Core/Src/main.c", "reason": "Current callback bridge and timer usage"}
+{"file": "Core/Src/stm32f4xx_it.c", "reason": "IRQ handlers for ADC and DMA streams"}
+{"file": "app/app_tasks/app_init.c", "reason": "Current runtime startup path and ADC1 DMA launch point"}
+{"file": "app/app_tasks/app_sensor_task.c", "reason": "Current sensor telemetry output path"}
+{"file": "app/control/pwm_control.c", "reason": "Existing breathing LED logic that must be preserved"}
+{"file": "app/control/pwm_control.h", "reason": "Control-layer API surface for preserving breathing LED while adding heater window control"}
+{"file": "app/sensor/adc_sampler.c", "reason": "Existing ADC1 voltage sampler to keep isolated from thermocouple path"}
+{"file": ".research/AxxSolder/README.md", "reason": "Reference timing and calibration design for JBC thermocouple measurement"}
+{"file": ".research/AxxSolder/AxxSolder_firmware/Core/Src/main.c", "reason": "Reference implementation of heating-off stable-window ADC measurement"}

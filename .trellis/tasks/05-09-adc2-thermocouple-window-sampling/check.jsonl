@@ -1,0 +1,16 @@
+{"file": ".claude/commands/trellis/finish-work.md", "reason": "Finish work checklist"}
+{"file": ".claude/commands/trellis/check.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Review module ownership after implementation"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Review timer DMA callback and generated-code safety"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Review HAL failure paths and state restoration"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Review duplicated ADC or timing logic"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review timer to ADC to telemetry data flow"}
+{"file": "Core/Src/adc.c", "reason": "Review ADC2 runtime hookup"}
+{"file": "Core/Src/tim.c", "reason": "Review added timer ownership and TIM8 preservation"}
+{"file": "Core/Src/main.c", "reason": "Review callback glue and startup sequencing"}
+{"file": "Core/Src/stm32f4xx_it.c", "reason": "Review IRQ completeness"}
+{"file": "app/app_tasks/app_init.c", "reason": "Review startup sequencing changes"}
+{"file": "app/app_tasks/app_sensor_task.c", "reason": "Review output path and observability"}
+{"file": "app/control/pwm_control.c", "reason": "Review breathing LED remains intact"}
+{"file": "app/sensor/adc_sampler.c", "reason": "Review ADC1 sampler isolation"}
+{"file": ".research/AxxSolder/README.md", "reason": "Compare implemented timing concept against reference"}

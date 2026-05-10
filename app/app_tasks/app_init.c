@@ -1,11 +1,13 @@
 #include "app_tasks/app_init.h"
 
 #include "app_tasks/app_echo_task.h"
+#include "control/pwm_control.h"
 #include "control/uart_cmd.h"
 #include "lv_port_disp.h"
 #include "lv_port_indev.h"
 #include "sensor/adc_sampler.h"
 #include "sensor/ina_monitor.h"
+#include "sensor/thermocouple_sampler.h"
 
 #include "adc.h"
 #include "tim.h"
@@ -52,8 +54,19 @@ void App_Init(void)
 
   HAL_UART_Receive_DMA(&huart1, UartCmd_GetRxBuffer(), UartCmd_GetRxBufferSize());
   HAL_TIM_Base_Start_IT(&htim8);
+  PwmControl_Init();
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
   HAL_ADC_Start_DMA(&hadc1,
                     (uint32_t *)AdcSampler_GetDmaBuffer(),
                     AdcSampler_GetDmaSampleCount());
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+
+  ThermocoupleSampler_Init();
+  {
+    HAL_StatusTypeDef rc = ThermocoupleSampler_Start();
+    if (rc != HAL_OK) {
+      printf("[TC] window sampler start FAILED, rc=%d\r\n", rc);
+    } else {
+      printf("[TC] window sampler start OK\r\n");
+    }
+  }
 }

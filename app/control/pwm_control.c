@@ -5,12 +5,18 @@
 #define PWM_DUTY_MAX_X10 950u
 
 static volatile uint16_t s_pwm_duty_x10;
+static volatile uint8_t s_pwm_output_suspended;
 static int s_breath_dir = 1;
 static int s_breath_duty;
 static int s_breath_repeat;
 static int s_breath_repeats;
 static int s_breath_speed;
 static uint8_t s_breath_phase;
+
+static void PwmControl_ApplyDutyX10(uint16_t duty_x10)
+{
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, duty_x10);
+}
 
 static void BreathAdvance(void)
 {
@@ -27,6 +33,14 @@ static void BreathAdvance(void)
   }
 }
 
+void PwmControl_Init(void)
+{
+  /* Thermocouple windowing must force the heater off immediately. */
+  __HAL_TIM_DISABLE_OCxPRELOAD(&htim3, TIM_CHANNEL_4);
+  s_pwm_output_suspended = 0u;
+  PwmControl_ApplyDutyX10(s_pwm_duty_x10);
+}
+
 void PwmControl_SetDutyX10(uint16_t duty_x10)
 {
   if (duty_x10 > PWM_DUTY_MAX_X10) {
@@ -34,12 +48,26 @@ void PwmControl_SetDutyX10(uint16_t duty_x10)
   }
 
   s_pwm_duty_x10 = duty_x10;
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, duty_x10);
+  if (s_pwm_output_suspended == 0u) {
+    PwmControl_ApplyDutyX10(duty_x10);
+  }
 }
 
 uint16_t PwmControl_GetDutyX10(void)
 {
   return s_pwm_duty_x10;
+}
+
+void PwmControl_SuspendForMeasurement(void)
+{
+  s_pwm_output_suspended = 1u;
+  PwmControl_ApplyDutyX10(0u);
+}
+
+void PwmControl_ResumeAfterMeasurement(void)
+{
+  s_pwm_output_suspended = 0u;
+  PwmControl_ApplyDutyX10(s_pwm_duty_x10);
 }
 
 const char *PwmControl_CycleBreathSpeed(uint32_t *cycle_seconds)

@@ -59,6 +59,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     app/control/pwm_control.c
     app/control/uart_cmd.c
     app/sensor/adc_sampler.c
+    app/sensor/thermocouple_sampler.c
     app/sensor/ina_monitor.c
     app/ui/ui_main_screen.c
     app/ui/lcd_text_renderer.c

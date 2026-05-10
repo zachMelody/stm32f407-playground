@@ -6,6 +6,7 @@ static lv_obj_t *s_lbl_ina_vi;
 static lv_obj_t *s_lbl_ina_p;
 static lv_obj_t *s_lbl_pwm;
 static lv_obj_t *s_bar_pwm;
+static lv_obj_t *s_lbl_tc;
 static lv_obj_t *s_lbl_raw;
 static lv_obj_t *s_lbl_v;
 static uint8_t s_initialized;
@@ -46,6 +47,12 @@ void UiMainScreen_Init(void)
   lv_bar_set_value(s_bar_pwm, 0, LV_ANIM_OFF);
   lv_obj_align(s_bar_pwm, LV_ALIGN_CENTER, 0, -10);
 
+  s_lbl_tc = lv_label_create(scr);
+  lv_obj_set_style_text_color(s_lbl_tc, lv_color_hex(0xFFB347), 0);
+  lv_obj_set_style_text_font(s_lbl_tc, &lv_font_montserrat_14, 0);
+  lv_label_set_text(s_lbl_tc, "TMP --.- C   TC ---- uV");
+  lv_obj_align(s_lbl_tc, LV_ALIGN_CENTER, 0, 20);
+
   s_lbl_raw = lv_label_create(scr);
   lv_obj_set_style_text_color(s_lbl_raw, lv_color_hex(0x888888), 0);
   lv_obj_set_style_text_font(s_lbl_raw, &lv_font_montserrat_14, 0);
@@ -64,8 +71,11 @@ void UiMainScreen_Init(void)
 void UiMainScreen_Refresh(uint16_t duty_x10,
                           uint32_t voltage_mv,
                           uint16_t adc_raw,
-                          const ina_monitor_snapshot_t *ina)
+                          const ina_monitor_snapshot_t *ina,
+                          const thermocouple_snapshot_t *tc)
 {
+  uint32_t temp_abs_x10;
+
   if (!s_initialized || ina == NULL) {
     return;
   }
@@ -87,6 +97,17 @@ void UiMainScreen_Refresh(uint16_t duty_x10,
                         (unsigned)(duty_x10 / 10u),
                         (unsigned)(duty_x10 % 10u));
   lv_bar_set_value(s_bar_pwm, duty_x10, LV_ANIM_OFF);
+
+  if (tc != NULL && tc->has_sample != 0u) {
+    temp_abs_x10 = (tc->temp_c_x10 < 0) ? (uint32_t)(-tc->temp_c_x10) : (uint32_t)tc->temp_c_x10;
+    lv_label_set_text_fmt(s_lbl_tc, "TMP %s%lu.%01lu C   TC %lu uV",
+                          (tc->temp_c_x10 < 0) ? "-" : "",
+                          (unsigned long)(temp_abs_x10 / 10u),
+                          (unsigned long)(temp_abs_x10 % 10u),
+                          (unsigned long)tc->tc_uv);
+  } else {
+    lv_label_set_text(s_lbl_tc, "TMP --.- C   TC ---- uV");
+  }
 
   lv_label_set_text_fmt(s_lbl_raw, "RAW  %u / 4095", (unsigned)adc_raw);
   lv_label_set_text_fmt(s_lbl_v, "V   %u.%03u V",

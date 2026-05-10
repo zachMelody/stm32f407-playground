@@ -34,6 +34,7 @@
 #include "app_tasks/app_init.h"
 #include "app_tasks/app_echo_task.h"
 #include "control/pwm_control.h"
+#include "sensor/thermocouple_sampler.h"
 #include "control/uart_cmd.h"
 
 /* USER CODE END Includes */
@@ -108,6 +109,9 @@ int main(void)
   MX_SPI1_Init();
   MX_TIM8_Init();
   MX_TIM3_Init();
+  MX_TIM4_Init();
+  MX_TIM5_Init();
+  MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
   App_Init();
   /* USER CODE END 2 */
@@ -192,6 +196,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   }
 }
 
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+  if (hadc->Instance == ADC2) {
+    ThermocoupleSampler_OnAdcDmaComplete();
+  }
+}
+
 /* USER CODE END 4 */
 
 /**
@@ -218,6 +229,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   if (htim->Instance == TIM8)
   {
     PwmControl_OnTim8Elapsed();
+  }
+  else if (htim->Instance == TIM4)
+  {
+    ThermocoupleSampler_OnSamplingTimerElapsed();
+  }
+  else if (htim->Instance == TIM5)
+  {
+    ThermocoupleSampler_OnSettleTimerElapsed();
   }
   /* USER CODE END Callback 1 */
 }

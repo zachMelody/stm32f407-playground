@@ -3,6 +3,7 @@
 #include "control/pwm_control.h"
 #include "sensor/adc_sampler.h"
 #include "sensor/ina_monitor.h"
+#include "sensor/thermocouple_sampler.h"
 #include "ui/ui_main_screen.h"
 
 #include "cmsis_os.h"
@@ -23,16 +24,19 @@ void App_LVGLTask(void *argument)
 
   for (;;) {
     ina_monitor_snapshot_t snapshot;
+    thermocouple_snapshot_t tc_snapshot;
 
     lv_timer_handler();
 
     if (++refresh_cnt >= 10u) {
       refresh_cnt = 0u;
       InaMonitor_GetSnapshot(&snapshot);
+      ThermocoupleSampler_GetSnapshot(&tc_snapshot);
       UiMainScreen_Refresh(PwmControl_GetDutyX10(),
                            AdcSampler_GetVoltageMv(),
                            AdcSampler_GetRaw(),
-                           &snapshot);
+                           &snapshot,
+                           &tc_snapshot);
     }
 
     osDelay(5);
